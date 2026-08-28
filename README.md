@@ -50,6 +50,13 @@ OIDC_CLIENT_SECRET=
 OIDC_REDIRECT_URI=http://localhost:3000/callback
 ```
 
+## 실행 가능한 MVP
+
+- [`web-login-mvp`](./web-login-mvp): 브라우저 Authorization Code + PKCE 로그인
+- [`cli-device-auth-mvp`](./cli-device-auth-mvp): `gh auth login` 형태의 CLI Device Flow와 보호 API/MCP 호출
+
+CLI MVP는 최종 사용자에게 API key나 환경변수를 요구하지 않습니다. CLI가 일회용 코드를 표시하고 브라우저에서 로그인·승인한 뒤 access/refresh token을 자체 관리합니다.
+
 ### 서버 간 통신용 confidential client
 
 - Client ID: `oidc-test-service`

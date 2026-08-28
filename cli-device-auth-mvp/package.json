@@ -1,0 +1,19 @@
+{
+  "name": "skills-cli-device-auth-mvp",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Device Authorization Grant MVP for CLI, API, and MCP authentication",
+  "bin": {
+    "skillsctl": "./bin/skillsctl.mjs"
+  },
+  "scripts": {
+    "setup": "node scripts/configure-keycloak.mjs",
+    "api": "node api-server.mjs",
+    "cli": "node bin/skillsctl.mjs",
+    "test:e2e": "node scripts/e2e-test.mjs"
+  },
+  "engines": {
+    "node": ">=20.3"
+  }
+}
