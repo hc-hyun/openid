@@ -1,0 +1,14 @@
+{
+  "name": "auth-bridge-gateway",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Prefix-aware Keycloak reverse proxy and OIDC form_post adapter",
+  "scripts": {
+    "start": "node server.mjs",
+    "test": "node --test"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
