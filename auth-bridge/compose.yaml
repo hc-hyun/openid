@@ -1,0 +1,82 @@
+name: authbridge
+
+services:
+  postgres:
+    image: postgres:18.6-alpine
+    environment:
+      POSTGRES_DB: ${AUTHBRIDGE_DB_NAME:-authbridge}
+      POSTGRES_USER: ${AUTHBRIDGE_DB_USERNAME:-authbridge}
+      POSTGRES_PASSWORD: ${AUTHBRIDGE_DB_PASSWORD:-authbridge-db-local-only}
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    volumes:
+      - postgres-data:/var/lib/postgresql
+    restart: unless-stopped
+
+  keycloak:
+    build:
+      context: ./keycloak
+    command: ["start", "--optimized"]
+    environment:
+      KC_BOOTSTRAP_ADMIN_USERNAME: ${KEYCLOAK_ADMIN_USERNAME:-admin}
+      KC_BOOTSTRAP_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD:-admin-local-only}
+      KC_DB: postgres
+      KC_DB_URL: jdbc:postgresql://postgres:5432/${AUTHBRIDGE_DB_NAME:-authbridge}
+      KC_DB_USERNAME: ${AUTHBRIDGE_DB_USERNAME:-authbridge}
+      KC_DB_PASSWORD: ${AUTHBRIDGE_DB_PASSWORD:-authbridge-db-local-only}
+      KC_HTTP_ENABLED: "true"
+      KC_HOSTNAME: ${AUTHBRIDGE_PUBLIC_URL:-https://smart-dna.sec.samsung.net/ws2/30001}
+      KC_HOSTNAME_STRICT: "true"
+      KC_PROXY_HEADERS: xforwarded
+      KC_HEALTH_ENABLED: "true"
+    ports:
+      - "127.0.0.1:${AUTHBRIDGE_KEYCLOAK_ADMIN_PORT:-8080}:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - "{ printf 'HEAD /health/ready HTTP/1.0\r\n\r\n' >&0; grep 'HTTP/1.0 200'; } 0<>/dev/tcp/localhost/9000"
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
+    mem_limit: 1g
+    restart: unless-stopped
+
+  gateway:
+    build:
+      context: ./gateway
+    environment:
+      AUTHBRIDGE_GATEWAY_PUBLIC_URL: ${AUTHBRIDGE_PUBLIC_URL:-https://smart-dna.sec.samsung.net/ws2/30001}
+      AUTHBRIDGE_GATEWAY_HOST: 0.0.0.0
+      AUTHBRIDGE_KEYCLOAK_URL: http://keycloak:8080
+    ports:
+      - "127.0.0.1:${AUTHBRIDGE_GATEWAY_PORT:-30001}:30001"
+    depends_on:
+      keycloak:
+        condition: service_healthy
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://127.0.0.1:30001/readyz').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped
+
+volumes:
+  postgres-data:

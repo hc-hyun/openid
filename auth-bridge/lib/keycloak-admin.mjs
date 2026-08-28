@@ -347,6 +347,13 @@ export async function fetchDiscovery(config, fetchImpl = globalThis.fetch) {
   } catch (error) {
     throw new Error(`OIDC discovery request failed: ${maskKnownSecrets(error.message, [config.upstream.clientSecret])}`);
   }
+  if (
+    config.upstream.allowInsecureEndpointOverrides !== true &&
+    response.url &&
+    new URL(response.url).protocol !== "https:"
+  ) {
+    throw new Error("OIDC discovery redirected to a non-HTTPS URL");
+  }
   const text = await response.text();
   if (!response.ok) {
     throw new Error(`OIDC discovery request failed (${response.status}): ${maskKnownSecrets(text, [config.upstream.clientSecret])}`);
@@ -357,7 +364,9 @@ export async function fetchDiscovery(config, fetchImpl = globalThis.fetch) {
   } catch {
     throw new Error("OIDC discovery endpoint did not return valid JSON");
   }
-  return validateDiscovery(document);
+  return validateDiscovery(document, {
+    allowInsecure: config.upstream.allowInsecureEndpointOverrides === true,
+  });
 }
 
 export async function provision(config, options = {}) {

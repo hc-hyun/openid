@@ -227,6 +227,10 @@ describe("AuthBridge gateway", () => {
     assert.equal(health.statusCode, 200);
     assert.deepEqual(JSON.parse(health.body), { status: "ok" });
 
+    const ready = await request(gatewayPort, { path: "/readyz" });
+    assert.equal(ready.statusCode, 200);
+    assert.deepEqual(JSON.parse(ready.body), { status: "ok" });
+
     const missing = await request(gatewayPort, { path: "/not-keycloak" });
     assert.equal(missing.statusCode, 404);
 
@@ -251,6 +255,26 @@ describe("AuthBridge gateway", () => {
     });
     assert.equal(trace.statusCode, 405);
     assert.equal(observations.length, initialCount);
+  });
+
+  test("reports unavailable when the Keycloak backend cannot be reached", async () => {
+    const stoppedBackend = http.createServer();
+    const stoppedPort = await listen(stoppedBackend);
+    await close(stoppedBackend);
+    const isolated = createGateway({
+      publicUrl: "https://example.test/ws2/30001",
+      backendUrl: `http://127.0.0.1:${stoppedPort}`,
+      timeoutMs: 100,
+      logger: { error() {} },
+    });
+    const port = await listen(isolated);
+    try {
+      const result = await request(port, { path: "/readyz" });
+      assert.equal(result.statusCode, 503);
+      assert.deepEqual(JSON.parse(result.body), { status: "unavailable" });
+    } finally {
+      await close(isolated);
+    }
   });
 
   test("caps ordinary proxy request bodies", async () => {

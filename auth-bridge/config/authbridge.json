@@ -37,7 +37,7 @@
     "discoveryUrl": "https://login.example.internal/adfs/.well-known/openid-configuration",
     "defaultScope": "openid profile email",
     "clientAuthMethod": "client_secret_post",
-    "responseMode": "query",
+    "responseMode": "form_post",
     "syncMode": "IMPORT",
     "trustEmail": false
   }

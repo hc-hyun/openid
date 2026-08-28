@@ -1,0 +1,10 @@
+services:
+  keycloak:
+    environment:
+      KC_TRUSTSTORE_PATHS: /opt/keycloak/conf/truststores/company-ca-chain.pem
+      KC_TLS_HOSTNAME_VERIFIER: DEFAULT
+    volumes:
+      - type: bind
+        source: ${AUTHBRIDGE_CA_CERTIFICATE:?set AUTHBRIDGE_CA_CERTIFICATE to an absolute PEM bundle path}
+        target: /opt/keycloak/conf/truststores/company-ca-chain.pem
+        read_only: true

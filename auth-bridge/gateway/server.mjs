@@ -9,6 +9,7 @@ const FORM_POST_LIMIT = 8 * 1024;
 const DEFAULT_PROXY_BODY_LIMIT = 10 * 1024 * 1024;
 const DEFAULT_TIMEOUT_MS = 30_000;
 const HEALTH_PATH = "/healthz";
+const READY_PATH = "/readyz";
 const ADAPTER_REQUEST_HEADERS = new Set(["accept", "accept-language", "cookie", "user-agent"]);
 
 const HOP_BY_HOP_HEADERS = new Set([
@@ -296,6 +297,30 @@ function backendPath(config, strippedPath, search = "") {
   return `${config.backendBasePath}${strippedPath}${search}` || "/";
 }
 
+function checkBackend(config) {
+  return new Promise((resolve) => {
+    const transport = config.backendUrl.protocol === "https:" ? https : http;
+    const probe = transport.request(
+      {
+        protocol: config.backendUrl.protocol,
+        hostname: config.backendUrl.hostname,
+        port: config.backendUrl.port || undefined,
+        method: "HEAD",
+        path: backendPath(config, "/realms/master/.well-known/openid-configuration"),
+        headers: { host: config.backendUrl.host },
+        timeout: config.timeoutMs,
+      },
+      (backendResponse) => {
+        backendResponse.resume();
+        resolve((backendResponse.statusCode ?? 500) < 500);
+      },
+    );
+    probe.once("timeout", () => probe.destroy());
+    probe.once("error", () => resolve(false));
+    probe.end();
+  });
+}
+
 function requestBackend(request, response, config, { method, path, body, adapter = false }) {
   return new Promise((resolve, reject) => {
     const transport = config.backendUrl.protocol === "https:" ? https : http;
@@ -422,13 +447,17 @@ export function createGateway(options) {
         throw new RequestError(405, "Method not allowed");
       }
       const requestUrl = new URL(request.url ?? "/", "http://gateway.invalid");
-      if (requestUrl.pathname === HEALTH_PATH) {
+      if (requestUrl.pathname === HEALTH_PATH || requestUrl.pathname === READY_PATH) {
         if (request.method !== "GET" && request.method !== "HEAD") {
           response.setHeader("allow", "GET, HEAD");
           throw new RequestError(405, "Method not allowed");
         }
-        const body = request.method === "HEAD" ? Buffer.alloc(0) : Buffer.from('{"status":"ok"}');
-        response.writeHead(200, {
+        const ready = requestUrl.pathname === HEALTH_PATH || await checkBackend(config);
+        const status = ready ? "ok" : "unavailable";
+        const body = request.method === "HEAD"
+          ? Buffer.alloc(0)
+          : Buffer.from(JSON.stringify({ status }));
+        response.writeHead(ready ? 200 : 503, {
           "cache-control": "no-store",
           "content-type": "application/json; charset=utf-8",
           "content-length": body.length,

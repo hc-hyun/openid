@@ -170,8 +170,17 @@ export async function loadConfig(options = {}) {
   }
 
   profile.keycloak ??= {};
+  profile.resources ??= {};
   profile.upstream ??= {};
+  if (env.AUTHBRIDGE_KEYCLOAK_ADMIN_URL) {
+    profile.keycloak.adminUrl = env.AUTHBRIDGE_KEYCLOAK_ADMIN_URL;
+  }
   if (env.AUTHBRIDGE_PUBLIC_URL) profile.keycloak.publicUrl = env.AUTHBRIDGE_PUBLIC_URL;
+  if (env.AUTHBRIDGE_MCP_AUDIENCE) {
+    profile.resources.mcpAudience = env.AUTHBRIDGE_MCP_AUDIENCE;
+  } else if (env.AUTHBRIDGE_PUBLIC_URL) {
+    profile.resources.mcpAudience = `${normalizeBaseUrl(env.AUTHBRIDGE_PUBLIC_URL)}/mcp`;
+  }
   if (env.UPSTREAM_OIDC_DISCOVERY_URL) profile.upstream.discoveryUrl = env.UPSTREAM_OIDC_DISCOVERY_URL;
   validateProfile(profile);
 

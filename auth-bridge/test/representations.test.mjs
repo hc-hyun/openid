@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import { fetchDiscovery } from "../lib/keycloak-admin.mjs";
 import {
   apiClientRepresentation,
   audienceMapperRepresentations,
@@ -86,6 +87,7 @@ test("mock back-channel overrides do not change issuer or browser authorization 
     ...config,
     upstream: {
       ...config.upstream,
+      allowInsecureEndpointOverrides: true,
       endpointOverrides: {
         tokenUrl: "http://corporate-oidc:8080/realms/corporate-test/protocol/openid-connect/token",
         jwksUrl: "http://corporate-oidc:8080/realms/corporate-test/protocol/openid-connect/certs",
@@ -121,12 +123,44 @@ test("discovery and configured response mode are validated", () => {
     /response_type=code/,
   );
   assert.throws(
+    () => validateDiscovery({ ...discovery, token_endpoint: "http://idp.example/token" }),
+    /token_endpoint must use HTTPS/,
+  );
+  assert.equal(
+    validateDiscovery(
+      { ...discovery, issuer: "http://localhost:8090/realms/test" },
+      { allowInsecure: true },
+    ).issuer,
+    "http://localhost:8090/realms/test",
+  );
+  assert.throws(
     () =>
       identityProviderRepresentation(config, {
         ...discovery,
         response_modes_supported: ["form_post"],
       }),
     /response_mode=query/,
+  );
+});
+
+test("production discovery rejects a redirect downgrade to HTTP", async () => {
+  const discoveryConfig = {
+    keycloak: { requestTimeoutMs: 1_000 },
+    upstream: {
+      discoveryUrl: "https://idp.example/.well-known/openid-configuration",
+      clientSecret: "not-logged",
+    },
+  };
+  const downgradedResponse = {
+    url: "http://idp.example/.well-known/openid-configuration",
+    ok: true,
+    status: 200,
+    text: async () => JSON.stringify(discovery),
+  };
+
+  await assert.rejects(
+    fetchDiscovery(discoveryConfig, async () => downgradedResponse),
+    /redirected to a non-HTTPS URL/,
   );
 });
 

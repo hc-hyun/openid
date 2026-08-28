@@ -1,22 +1,26 @@
-function absoluteHttpUrl(value, label) {
+function absoluteHttpUrl(value, label, options = {}) {
   try {
     const url = new URL(value);
     if (!["http:", "https:"].includes(url.protocol)) throw new Error();
+    if (!options.allowInsecure && url.protocol !== "https:") {
+      throw new Error(`OIDC discovery field ${label} must use HTTPS`);
+    }
     return url.toString();
-  } catch {
+  } catch (error) {
+    if (error?.message?.includes("must use HTTPS")) throw error;
     throw new Error(`OIDC discovery field ${label} must be an absolute HTTP(S) URL`);
   }
 }
 
-export function validateDiscovery(document) {
+export function validateDiscovery(document, options = {}) {
   if (!document || typeof document !== "object" || Array.isArray(document)) {
     throw new Error("OIDC discovery response must be a JSON object");
   }
   for (const field of ["issuer", "authorization_endpoint", "token_endpoint", "jwks_uri"]) {
-    absoluteHttpUrl(document[field], field);
+    absoluteHttpUrl(document[field], field, options);
   }
   for (const field of ["userinfo_endpoint", "end_session_endpoint"]) {
-    if (document[field] !== undefined) absoluteHttpUrl(document[field], field);
+    if (document[field] !== undefined) absoluteHttpUrl(document[field], field, options);
   }
   if (document.response_types_supported && !document.response_types_supported.includes("code")) {
     throw new Error("Upstream OIDC provider does not advertise response_type=code");
@@ -131,7 +135,9 @@ export function audienceMapperRepresentations(config) {
 }
 
 export function identityProviderRepresentation(config, discoveryDocument) {
-  const discovery = validateDiscovery(discoveryDocument);
+  const discovery = validateDiscovery(discoveryDocument, {
+    allowInsecure: config.upstream.allowInsecureEndpointOverrides === true,
+  });
   if (
     Array.isArray(discovery.response_modes_supported) &&
     !discovery.response_modes_supported.includes(config.upstream.responseMode)

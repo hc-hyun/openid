@@ -16,6 +16,7 @@ public URL       https://smart-dna.sec.samsung.net/ws2/30001
 listen           127.0.0.1:30001
 Keycloak backend http://localhost:8080
 health           http://127.0.0.1:30001/healthz
+readiness        http://127.0.0.1:30001/readyz
 ```
 
 임시 prefix나 배포 주소가 바뀌면 전체 공개 URL 하나만 바꿉니다.
@@ -49,6 +50,8 @@ https://smart-dna.sec.samsung.net/ws2/30001/realms/authbridge/broker/company-oid
 Keycloak의 callback이 `GET` 전용이므로 내부 한정 URL에는 일회용 code와 state가 query로 들어갑니다. Backend는 loopback 또는 격리된 네트워크에만 두고 Keycloak, reverse proxy, APM의 query-string access log를 끄세요.
 
 같은 prefix 안에서도 `authbridge` realm과 Keycloak 정적 리소스만 프록시합니다. `/admin`, `master` realm, metrics/management 경로와 `TRACE`는 공개하지 않으며 관리 작업은 내부 Keycloak 주소로만 수행합니다. 허용된 일반 요청은 메서드와 query를 유지합니다. 요청 본문 제한은 기본 10 MiB이며 `AUTHBRIDGE_GATEWAY_MAX_BODY_BYTES`로 바꿀 수 있습니다. Backend timeout은 `AUTHBRIDGE_GATEWAY_TIMEOUT_MS`, 요청 수신 timeout은 `AUTHBRIDGE_GATEWAY_REQUEST_TIMEOUT_MS`로 설정하며 둘 다 기본 30초입니다.
+
+`/healthz`는 gateway process liveness만 확인하고 `/readyz`는 Keycloak master discovery endpoint까지 연결되는지 확인합니다. 둘 다 공개 prefix 밖에 있으므로 외부 proxy에는 노출하지 않습니다.
 
 ## 테스트
 

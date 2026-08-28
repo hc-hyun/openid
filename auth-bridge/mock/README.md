@@ -17,7 +17,7 @@ docker compose up -d --wait
 
 ```bash
 cd ..
-npm run test:e2e:broker
+npm run test:e2e
 ```
 
 The imported provider is then available at:
@@ -50,6 +50,8 @@ It accepts the exact local Keycloak broker callback and its callback prefix:
 ```text
 http://localhost:8080/realms/authbridge/broker/company-oidc/endpoint
 http://localhost:8080/realms/authbridge/broker/company-oidc/*
+http://localhost:8180/ws2/30001/realms/authbridge/broker/company-oidc/endpoint
+http://localhost:8180/ws2/30001/realms/authbridge/broker/company-oidc/*
 ```
 
 The prefix mirrors the current corporate redirect-prefix behavior. The exact

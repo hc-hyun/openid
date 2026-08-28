@@ -43,6 +43,7 @@ test("loadConfig needs only upstream client values with local Keycloak defaults"
     assert.equal(config.keycloak.adminUsername, "admin");
     assert.equal(config.keycloak.adminPassword, "admin-local-only");
     assert.equal(config.realm.name, "authbridge");
+    assert.equal(config.upstream.responseMode, "form_post");
     assert.equal(
       config.callbackUrl,
       "https://smart-dna.sec.samsung.net/ws2/30001/realms/authbridge/broker/company-oidc/endpoint",
@@ -53,6 +54,40 @@ test("loadConfig needs only upstream client values with local Keycloak defaults"
   } finally {
     await rm(cwd, { recursive: true });
   }
+});
+
+test("one public URL override moves callback and the default MCP audience together", async () => {
+  const config = await loadConfig({
+    profilePath,
+    env: {
+      UPSTREAM_OIDC_CLIENT_ID: "issued-client",
+      UPSTREAM_OIDC_CLIENT_SECRET: "issued-secret",
+      AUTHBRIDGE_PUBLIC_URL: "https://auth.example/new-prefix/",
+      AUTHBRIDGE_KEYCLOAK_ADMIN_URL: "http://127.0.0.1:8280/",
+    },
+  });
+
+  assert.equal(config.keycloak.publicUrl, "https://auth.example/new-prefix");
+  assert.equal(config.keycloak.adminUrl, "http://127.0.0.1:8280");
+  assert.equal(
+    config.callbackUrl,
+    "https://auth.example/new-prefix/realms/authbridge/broker/company-oidc/endpoint",
+  );
+  assert.equal(config.resources.mcpAudience, "https://auth.example/new-prefix/mcp");
+});
+
+test("an explicit MCP audience wins when the protected resource uses another origin", async () => {
+  const config = await loadConfig({
+    profilePath,
+    env: {
+      UPSTREAM_OIDC_CLIENT_ID: "issued-client",
+      UPSTREAM_OIDC_CLIENT_SECRET: "issued-secret",
+      AUTHBRIDGE_PUBLIC_URL: "https://auth.example/new-prefix",
+      AUTHBRIDGE_MCP_AUDIENCE: "https://mcp.example/tools",
+    },
+  });
+
+  assert.equal(config.resources.mcpAudience, "https://mcp.example/tools");
 });
 
 test(".env supplies values but explicit environment wins", async () => {
