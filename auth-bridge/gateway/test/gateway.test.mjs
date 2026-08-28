@@ -15,7 +15,7 @@ function close(server) {
   return new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
 }
 
-function request(port, { method = "GET", path = "/", headers = {}, body = "" } = {}) {
+function request(port, { method = "GET", path = "/", headers = {}, body = "", chunked = false } = {}) {
   const payload = Buffer.from(body);
   return new Promise((resolve, reject) => {
     const outgoing = http.request({
@@ -25,7 +25,12 @@ function request(port, { method = "GET", path = "/", headers = {}, body = "" } =
       path,
       headers: {
         ...headers,
-        ...(headers["content-length"] === undefined && body !== "" ? { "content-length": payload.length } : {}),
+        ...(chunked ? { "transfer-encoding": "chunked" } : {}),
+        ...(
+          !chunked && headers["content-length"] === undefined && body !== ""
+            ? { "content-length": payload.length }
+            : {}
+        ),
       },
     }, (response) => {
       const chunks = [];
@@ -47,6 +52,7 @@ describe("gateway configuration and parser", () => {
     assert.equal(config.publicPrefix, "/ws2/30001");
     assert.equal(config.backendUrl.href, "http://localhost:8080/");
     assert.equal(config.formPostLimit, 8192);
+    assert.equal(config.requestTimeoutMs, 30000);
   });
 
   test("accepts an OIDC error response and rejects duplicate fields", () => {
@@ -153,7 +159,14 @@ describe("AuthBridge gateway", () => {
     const result = await request(gatewayPort, {
       method: "POST",
       path: "/ws2/30001/realms/authbridge/broker/company-oidc/endpoint",
-      headers: { "content-type": "application/x-www-form-urlencoded; charset=UTF-8" },
+      headers: {
+        accept: "text/html",
+        authorization: "Bearer must-not-reach-keycloak",
+        cookie: "AUTH_SESSION_ID=session-one",
+        "content-type": "application/x-www-form-urlencoded; charset=UTF-8",
+        origin: "https://corporate.example",
+        "x-trace-id": "must-not-reach-keycloak",
+      },
       body: `code=${secretCode}&state=${secretState}`,
     });
 
@@ -171,6 +184,12 @@ describe("AuthBridge gateway", () => {
     assert.equal(callback.searchParams.get("code"), secretCode);
     assert.equal(callback.searchParams.get("state"), secretState);
     assert.equal(seen.body, "");
+    assert.equal(seen.headers.accept, "text/html");
+    assert.equal(seen.headers.cookie, "AUTH_SESSION_ID=session-one");
+    assert.equal(seen.headers.authorization, undefined);
+    assert.equal(seen.headers["content-type"], undefined);
+    assert.equal(seen.headers.origin, undefined);
+    assert.equal(seen.headers["x-trace-id"], undefined);
     assert.equal(logs.join("\n").includes(secretCode), false);
     assert.equal(logs.join("\n").includes(secretState), false);
   });
@@ -186,6 +205,7 @@ describe("AuthBridge gateway", () => {
       { body: "code=a&state=s&unknown=x", status: 400 },
       { body: "code=a&state=s&state=again", status: 400 },
       { body: "code=a&state=%ZZ", status: 400 },
+      { body: `code=${"/".repeat(3000)}&state=s`, status: 413 },
       { body: `code=${"a".repeat(8192)}&state=s`, status: 413 },
     ];
     const initialCount = observations.length;
@@ -215,10 +235,21 @@ describe("AuthBridge gateway", () => {
       "/ws2/30001/admin/",
       "/ws2/30001/realms/master/protocol/openid-connect/auth",
       "/ws2/30001/metrics",
+      "/ws2/300010/realms/authbridge/device",
+      "/ws2/30001/%2e%2e/admin",
+      "/ws2/30001/realms/authbridge/%2e%2e/master",
+      "/ws2/30001/realms/authbridge%2F..%2Fmaster",
     ]) {
       const blocked = await request(gatewayPort, { path });
       assert.equal(blocked.statusCode, 404, path);
     }
+    assert.equal(observations.length, initialCount);
+
+    const trace = await request(gatewayPort, {
+      method: "TRACE",
+      path: "/ws2/30001/realms/authbridge/device",
+    });
+    assert.equal(trace.statusCode, 405);
     assert.equal(observations.length, initialCount);
   });
 
@@ -230,6 +261,9 @@ describe("AuthBridge gateway", () => {
       logger: { error() {} },
     });
     const port = await listen(limited);
+    assert.equal(limited.requestTimeout, 30000);
+    assert.equal(limited.headersTimeout, 30000);
+    assert.equal(limited.keepAliveTimeout, 5000);
     try {
       const result = await request(port, {
         method: "POST",
@@ -237,6 +271,15 @@ describe("AuthBridge gateway", () => {
         body: "123456",
       });
       assert.equal(result.statusCode, 413);
+
+      const chunked = await request(port, {
+        method: "POST",
+        path: "/ws2/30001/realms/authbridge/test",
+        body: "123456",
+        chunked: true,
+      });
+      assert.equal(chunked.statusCode, 413);
+      assert.equal(chunked.headers.connection, "close");
     } finally {
       await close(limited);
     }

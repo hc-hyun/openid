@@ -9,6 +9,7 @@ const FORM_POST_LIMIT = 8 * 1024;
 const DEFAULT_PROXY_BODY_LIMIT = 10 * 1024 * 1024;
 const DEFAULT_TIMEOUT_MS = 30_000;
 const HEALTH_PATH = "/healthz";
+const ADAPTER_REQUEST_HEADERS = new Set(["accept", "accept-language", "cookie", "user-agent"]);
 
 const HOP_BY_HOP_HEADERS = new Set([
   "connection",
@@ -31,9 +32,10 @@ const FORM_PARAMETERS = new Set([
 ]);
 
 class RequestError extends Error {
-  constructor(statusCode, message) {
+  constructor(statusCode, message, options = {}) {
     super(message);
     this.statusCode = statusCode;
+    this.closeConnection = options.closeConnection === true;
   }
 }
 
@@ -108,6 +110,12 @@ export function loadGatewayConfig(env = process.env) {
     "AUTHBRIDGE_GATEWAY_TIMEOUT_MS",
     120_000,
   );
+  const requestTimeoutMs = parsePositiveInteger(
+    env.AUTHBRIDGE_GATEWAY_REQUEST_TIMEOUT_MS,
+    DEFAULT_TIMEOUT_MS,
+    "AUTHBRIDGE_GATEWAY_REQUEST_TIMEOUT_MS",
+    120_000,
+  );
 
   return Object.freeze({
     host: env.AUTHBRIDGE_GATEWAY_HOST?.trim() || "127.0.0.1",
@@ -121,6 +129,7 @@ export function loadGatewayConfig(env = process.env) {
     formPostLimit: FORM_POST_LIMIT,
     maxProxyBodyBytes,
     timeoutMs,
+    requestTimeoutMs,
   });
 }
 
@@ -133,23 +142,48 @@ function contentLength(request) {
   return value;
 }
 
-async function readRequestBody(request, limit) {
+function readRequestBody(request, limit) {
   const declaredLength = contentLength(request);
   if (declaredLength !== undefined && declaredLength > limit) {
-    throw new RequestError(413, "Request body is too large");
+    throw new RequestError(413, "Request body is too large", { closeConnection: true });
   }
 
-  const chunks = [];
-  let size = 0;
-  for await (const chunk of request) {
-    size += chunk.length;
-    if (size > limit) {
-      request.destroy();
-      throw new RequestError(413, "Request body is too large");
-    }
-    chunks.push(chunk);
-  }
-  return Buffer.concat(chunks, size);
+  return new Promise((resolve, reject) => {
+    const chunks = [];
+    let size = 0;
+
+    const cleanup = () => {
+      request.off("data", onData);
+      request.off("end", onEnd);
+      request.off("aborted", onAborted);
+      request.off("error", onError);
+    };
+    const fail = (error) => {
+      cleanup();
+      reject(error);
+    };
+    const onData = (chunk) => {
+      size += chunk.length;
+      if (size > limit) {
+        request.pause();
+        fail(new RequestError(413, "Request body is too large", { closeConnection: true }));
+        return;
+      }
+      chunks.push(chunk);
+    };
+    const onEnd = () => {
+      cleanup();
+      resolve(Buffer.concat(chunks, size));
+    };
+    const onAborted = () => fail(new RequestError(400, "Request body was aborted", { closeConnection: true }));
+    const onError = () => fail(new RequestError(400, "Request body could not be read", { closeConnection: true }));
+
+    request.on("data", onData);
+    request.once("end", onEnd);
+    request.once("aborted", onAborted);
+    request.once("error", onError);
+    if (request.readableEnded) onEnd();
+  });
 }
 
 function decodeFormComponent(raw) {
@@ -216,12 +250,24 @@ function connectionHeaders(headers) {
   return named;
 }
 
-function upstreamHeaders(request, config, bodyLength) {
+function adapterRequestHeaderAllowed(name) {
+  return ADAPTER_REQUEST_HEADERS.has(name);
+}
+
+function upstreamHeaders(request, config, bodyLength, options = {}) {
   const blocked = connectionHeaders(request.headers);
   const headers = {};
   for (const [name, value] of Object.entries(request.headers)) {
     const lower = name.toLowerCase();
-    if (blocked.has(lower) || lower === "host" || lower.startsWith("x-forwarded-") || lower === "forwarded") continue;
+    if (
+      blocked.has(lower) ||
+      lower === "host" ||
+      lower.startsWith("x-forwarded-") ||
+      lower === "forwarded" ||
+      (options.adapter && !adapterRequestHeaderAllowed(lower))
+    ) {
+      continue;
+    }
     if (value !== undefined) headers[lower] = value;
   }
 
@@ -250,7 +296,7 @@ function backendPath(config, strippedPath, search = "") {
   return `${config.backendBasePath}${strippedPath}${search}` || "/";
 }
 
-function requestBackend(request, response, config, { method, path, body }) {
+function requestBackend(request, response, config, { method, path, body, adapter = false }) {
   return new Promise((resolve, reject) => {
     const transport = config.backendUrl.protocol === "https:" ? https : http;
     const upstream = transport.request(
@@ -260,7 +306,7 @@ function requestBackend(request, response, config, { method, path, body }) {
         port: config.backendUrl.port || undefined,
         method,
         path,
-        headers: upstreamHeaders(request, config, body.length),
+        headers: upstreamHeaders(request, config, body.length, { adapter }),
         timeout: config.timeoutMs,
       },
       (upstreamResponse) => {
@@ -284,14 +330,16 @@ function requestBackend(request, response, config, { method, path, body }) {
   });
 }
 
-function sendError(response, statusCode, message) {
+function sendError(response, statusCode, message, options = {}) {
   if (response.headersSent || response.destroyed) {
     response.destroy();
     return;
   }
   const body = Buffer.from(JSON.stringify({ error: message }));
+  if (options.closeConnection) response.shouldKeepAlive = false;
   response.writeHead(statusCode, {
     "cache-control": "no-store",
+    ...(options.closeConnection ? { connection: "close" } : {}),
     "content-type": "application/json; charset=utf-8",
     "content-length": body.length,
     "referrer-policy": "no-referrer",
@@ -323,10 +371,14 @@ async function handleFormPost(request, response, config, requestUrl) {
   const body = await readRequestBody(request, config.formPostLimit);
   const parameters = parseOidcForm(body);
   const query = new URLSearchParams(parameters).toString();
+  if (Buffer.byteLength(query) > config.formPostLimit) {
+    throw new RequestError(413, "Encoded callback parameters are too large");
+  }
   await requestBackend(request, response, config, {
     method: "GET",
     path: backendPath(config, config.callbackPath, `?${query}`),
     body: Buffer.alloc(0),
+    adapter: true,
   });
 }
 
@@ -365,6 +417,10 @@ export function createGateway(options) {
 
   const server = http.createServer(async (request, response) => {
     try {
+      if (request.method === "TRACE") {
+        response.setHeader("allow", "GET, HEAD, POST, OPTIONS");
+        throw new RequestError(405, "Method not allowed");
+      }
       const requestUrl = new URL(request.url ?? "/", "http://gateway.invalid");
       if (requestUrl.pathname === HEALTH_PATH) {
         if (request.method !== "GET" && request.method !== "HEAD") {
@@ -392,7 +448,9 @@ export function createGateway(options) {
       }
     } catch (error) {
       if (error instanceof RequestError) {
-        sendError(response, error.statusCode, error.message);
+        sendError(response, error.statusCode, error.message, {
+          closeConnection: error.closeConnection,
+        });
       } else {
         logger.error?.("AuthBridge gateway request failed");
         sendError(response, 502, "Bad gateway");
@@ -403,6 +461,10 @@ export function createGateway(options) {
   server.on("clientError", (_error, socket) => {
     if (socket.writable) socket.end("HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n");
   });
+  server.requestTimeout = config.requestTimeoutMs;
+  server.headersTimeout = Math.min(config.requestTimeoutMs, 60_000);
+  server.keepAliveTimeout = 5_000;
+  server.maxHeadersCount = 100;
   return server;
 }
 
