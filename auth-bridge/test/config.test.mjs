@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import test from "node:test";
@@ -9,6 +9,7 @@ import { brokerCallbackUrl, loadConfig, validateProfile } from "../lib/config.mj
 import { parseDotEnv } from "../lib/env.mjs";
 
 const profilePath = resolve(dirname(fileURLToPath(import.meta.url)), "../config/authbridge.json");
+const mockProfilePath = resolve(dirname(fileURLToPath(import.meta.url)), "../config/mock-query.json");
 
 test("parseDotEnv supports comments, export, and quoted values", () => {
   assert.deepEqual(
@@ -80,6 +81,47 @@ test("loadConfig fails before network access when the upstream secret is missing
       env: { UPSTREAM_OIDC_CLIENT_ID: "issued-client" },
     }),
     /UPSTREAM_OIDC_CLIENT_SECRET is required/,
+  );
+});
+
+test("mock query profile separates host discovery/front-channel from container back-channel", async () => {
+  const config = await loadConfig({
+    profilePath: mockProfilePath,
+    env: {
+      UPSTREAM_OIDC_CLIENT_ID: "authbridge-broker",
+      UPSTREAM_OIDC_CLIENT_SECRET: "mock-secret",
+    },
+  });
+
+  assert.equal(config.keycloak.publicUrl, "http://localhost:8080");
+  assert.equal(
+    config.callbackUrl,
+    "http://localhost:8080/realms/authbridge/broker/company-oidc/endpoint",
+  );
+  assert.equal(
+    config.upstream.discoveryUrl,
+    "http://localhost:8090/realms/corporate-test/.well-known/openid-configuration",
+  );
+  assert.equal(config.upstream.responseMode, "query");
+  assert.equal(
+    config.upstream.endpointOverrides.tokenUrl,
+    "http://corporate-oidc:8080/realms/corporate-test/protocol/openid-connect/token",
+  );
+});
+
+test("back-channel HTTP overrides require an explicit mock-only opt-in", async () => {
+  const profile = JSON.parse(await readFile(mockProfilePath, "utf8"));
+  profile.upstream.allowInsecureEndpointOverrides = false;
+  assert.throws(
+    () => validateProfile(profile),
+    /upstream\.endpointOverrides\.tokenUrl must use HTTPS/,
+  );
+
+  profile.upstream.allowInsecureEndpointOverrides = true;
+  profile.upstream.endpointOverrides.authorizationUrl = "http://corporate-oidc:8080/auth";
+  assert.throws(
+    () => validateProfile(profile),
+    /upstream\.endpointOverrides\.authorizationUrl is not supported/,
   );
 });
 

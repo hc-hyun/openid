@@ -1,0 +1,27 @@
+name: authbridge-mock-corporate
+
+services:
+  corporate-oidc:
+    image: quay.io/keycloak/keycloak:26.7.2
+    command: ["start-dev", "--import-realm"]
+    environment:
+      KC_BOOTSTRAP_ADMIN_USERNAME: ${MOCK_CORPORATE_ADMIN:-admin}
+      KC_BOOTSTRAP_ADMIN_PASSWORD: ${MOCK_CORPORATE_ADMIN_PASSWORD:-admin-local-only}
+      KC_HOSTNAME: http://localhost:${MOCK_CORPORATE_PORT:-8090}
+      KC_HEALTH_ENABLED: "true"
+    ports:
+      - "127.0.0.1:${MOCK_CORPORATE_PORT:-8090}:8080"
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - "{ printf 'HEAD /health/ready HTTP/1.0\r\n\r\n' >&0; grep 'HTTP/1.0 200'; } 0<>/dev/tcp/localhost/9000"
+      interval: 3s
+      timeout: 3s
+      retries: 30
+      start_period: 15s
+    volumes:
+      - ./corporate-test-realm.json:/opt/keycloak/data/import/corporate-test-realm.json:ro
+
+networks:
+  default:
+    name: authbridge-mock

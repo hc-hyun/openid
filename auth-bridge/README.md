@@ -1,4 +1,4 @@
-# AuthBridge — Stage A
+# AuthBridge
 
 Keycloak 26을 사내 웹 OIDC와 CLI Device Flow 사이의 인증 브리지로 구성하는 무의존성 Node.js 프로비저너입니다. 기존 MVP 폴더와 독립적으로 동작합니다.
 
@@ -64,3 +64,27 @@ npm test
 ```
 
 실제 서버 없이 설정 로딩/검증, callback 계산, 비밀 마스킹, Keycloak realm/client/IdP/mapper 표현식을 `node:test`로 확인합니다.
+
+### 가상 사내 OIDC 전체 테스트
+
+Docker가 실행 중이라면 한 명령으로 독립 mock 사내 인증서버를 띄우고 실제 브로커 로그인을 검증할 수 있습니다.
+
+```bash
+npm run test:e2e:broker
+```
+
+이 테스트는 다음 경로를 실제 HTTP와 서명된 토큰으로 통과합니다.
+
+```text
+skillsctl Device Flow
+  → AuthBridge Keycloak
+  → mock 사내 OIDC Authorization Code 로그인
+  → AuthBridge callback 및 code 교환
+  → Keycloak access/refresh token
+  → 보호 API와 MCP
+  → logout/revocation
+```
+
+mock 사내 서버의 client는 Redirect URI prefix를 허용하며, 브라우저 요청의 `client_id`, `response_type=code`, `response_mode=query`, callback, `state`, `nonce`를 검사합니다. 최종 토큰의 issuer가 사내 서버가 아닌 AuthBridge인지, `tester` role·scope·API/MCP audience가 있는지, broker 사용자 연결과 로컬 credential 삭제까지 확인합니다. mock의 password와 secret은 테스트 전용 공개값입니다.
+
+mock 구성 상세는 [`mock/README.md`](mock/README.md)에 있습니다.

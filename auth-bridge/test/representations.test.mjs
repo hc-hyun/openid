@@ -81,6 +81,39 @@ test("OIDC broker representation is discovery-driven and forces query mode in au
   assert.equal(representation.config.responseMode, undefined);
 });
 
+test("mock back-channel overrides do not change issuer or browser authorization endpoint", () => {
+  const mockConfig = {
+    ...config,
+    upstream: {
+      ...config.upstream,
+      endpointOverrides: {
+        tokenUrl: "http://corporate-oidc:8080/realms/corporate-test/protocol/openid-connect/token",
+        jwksUrl: "http://corporate-oidc:8080/realms/corporate-test/protocol/openid-connect/certs",
+        userInfoUrl: "http://corporate-oidc:8080/realms/corporate-test/protocol/openid-connect/userinfo",
+      },
+    },
+  };
+  const mockDiscovery = {
+    ...discovery,
+    issuer: "http://localhost:8090/realms/corporate-test",
+    authorization_endpoint:
+      "http://localhost:8090/realms/corporate-test/protocol/openid-connect/auth",
+    token_endpoint: "http://localhost:8090/realms/corporate-test/protocol/openid-connect/token",
+    jwks_uri: "http://localhost:8090/realms/corporate-test/protocol/openid-connect/certs",
+    userinfo_endpoint:
+      "http://localhost:8090/realms/corporate-test/protocol/openid-connect/userinfo",
+  };
+
+  const representation = identityProviderRepresentation(mockConfig, mockDiscovery);
+  assert.equal(representation.config.issuer, mockDiscovery.issuer);
+  const authorizationUrl = new URL(representation.config.authorizationUrl);
+  assert.equal(authorizationUrl.origin, "http://localhost:8090");
+  assert.equal(authorizationUrl.searchParams.get("response_mode"), "query");
+  assert.equal(representation.config.tokenUrl, mockConfig.upstream.endpointOverrides.tokenUrl);
+  assert.equal(representation.config.jwksUrl, mockConfig.upstream.endpointOverrides.jwksUrl);
+  assert.equal(representation.config.userInfoUrl, mockConfig.upstream.endpointOverrides.userInfoUrl);
+});
+
 test("discovery and configured response mode are validated", () => {
   assert.equal(validateDiscovery(discovery), discovery);
   assert.throws(

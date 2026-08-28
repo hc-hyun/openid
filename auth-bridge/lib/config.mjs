@@ -96,6 +96,37 @@ export function validateProfile(profile) {
   }
   if (typeof upstream.trustEmail !== "boolean") errors.push("upstream.trustEmail must be boolean");
 
+  const endpointOverrides = upstream.endpointOverrides;
+  if (endpointOverrides !== undefined) {
+    if (!endpointOverrides || typeof endpointOverrides !== "object" || Array.isArray(endpointOverrides)) {
+      errors.push("upstream.endpointOverrides must be an object");
+    } else {
+      const supportedOverrides = new Set(["tokenUrl", "jwksUrl", "userInfoUrl"]);
+      for (const key of Object.keys(endpointOverrides)) {
+        if (!supportedOverrides.has(key)) {
+          errors.push(`upstream.endpointOverrides.${key} is not supported`);
+        }
+      }
+      const allowInsecure = upstream.allowInsecureEndpointOverrides === true;
+      for (const key of supportedOverrides) {
+        if (endpointOverrides[key] !== undefined) {
+          parseUrl(
+            endpointOverrides[key],
+            `upstream.endpointOverrides.${key}`,
+            errors,
+            { https: !allowInsecure },
+          );
+        }
+      }
+    }
+  }
+  if (
+    upstream.allowInsecureEndpointOverrides !== undefined &&
+    typeof upstream.allowInsecureEndpointOverrides !== "boolean"
+  ) {
+    errors.push("upstream.allowInsecureEndpointOverrides must be boolean");
+  }
+
   if (errors.length) throw new Error(`Invalid AuthBridge configuration:\n- ${errors.join("\n- ")}`);
   return profile;
 }

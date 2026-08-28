@@ -1,0 +1,9 @@
+services:
+  keycloak:
+    networks:
+      - default
+      - authbridge-mock
+
+networks:
+  authbridge-mock:
+    external: true

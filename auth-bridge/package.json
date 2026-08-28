@@ -6,7 +6,9 @@
   "description": "Provision Keycloak as an OIDC bridge between a web-only company IdP and CLI clients",
   "scripts": {
     "provision": "node scripts/provision.mjs",
-    "test": "node --test"
+    "test": "node --test",
+    "test:mock": "node mock/validate-realm.mjs",
+    "test:e2e:broker": "node e2e/broker-query.mjs"
   },
   "engines": {
     "node": ">=20"

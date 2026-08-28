@@ -143,6 +143,8 @@ export function identityProviderRepresentation(config, discoveryDocument) {
   // endpoint itself so the upstream server returns a deterministic response.
   const authorizationUrl = new URL(discovery.authorization_endpoint);
   authorizationUrl.searchParams.set("response_mode", config.upstream.responseMode);
+  const endpointOverrides = config.upstream.endpointOverrides ?? {};
+  const userInfoUrl = endpointOverrides.userInfoUrl ?? discovery.userinfo_endpoint;
   return {
     alias: config.upstream.alias,
     displayName: config.upstream.displayName,
@@ -163,12 +165,12 @@ export function identityProviderRepresentation(config, discoveryDocument) {
       defaultScope: config.upstream.defaultScope,
       issuer: discovery.issuer,
       authorizationUrl: authorizationUrl.toString(),
-      tokenUrl: discovery.token_endpoint,
-      jwksUrl: discovery.jwks_uri,
+      tokenUrl: endpointOverrides.tokenUrl ?? discovery.token_endpoint,
+      jwksUrl: endpointOverrides.jwksUrl ?? discovery.jwks_uri,
       useJwksUrl: "true",
       validateSignature: "true",
-      disableUserInfo: String(!discovery.userinfo_endpoint),
-      ...(discovery.userinfo_endpoint ? { userInfoUrl: discovery.userinfo_endpoint } : {}),
+      disableUserInfo: String(!userInfoUrl),
+      ...(userInfoUrl ? { userInfoUrl } : {}),
       ...(discovery.end_session_endpoint ? { logoutUrl: discovery.end_session_endpoint } : {}),
     },
   };

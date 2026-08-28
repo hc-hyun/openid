@@ -1,0 +1,50 @@
+{
+  "keycloak": {
+    "adminUrl": "http://localhost:8080",
+    "publicUrl": "http://localhost:8080",
+    "adminRealm": "master",
+    "adminClientId": "admin-cli",
+    "requestTimeoutMs": 10000
+  },
+  "realm": {
+    "name": "authbridge",
+    "displayName": "AuthBridge Mock Query",
+    "sslRequired": "none",
+    "accessTokenLifespan": 300,
+    "ssoSessionIdleTimeout": 1800,
+    "ssoSessionMaxLifespan": 36000
+  },
+  "clients": {
+    "cli": "skills-cli",
+    "api": "skills-api"
+  },
+  "resources": {
+    "mcpAudience": "http://localhost:3200/mcp"
+  },
+  "scopes": [
+    {
+      "name": "skills.read",
+      "description": "Read the protected Skills API"
+    },
+    {
+      "name": "mcp.tools",
+      "description": "Call protected MCP tools"
+    }
+  ],
+  "upstream": {
+    "alias": "company-oidc",
+    "displayName": "Mock company login",
+    "discoveryUrl": "http://localhost:8090/realms/corporate-test/.well-known/openid-configuration",
+    "defaultScope": "openid profile email",
+    "clientAuthMethod": "client_secret_post",
+    "responseMode": "query",
+    "syncMode": "IMPORT",
+    "trustEmail": true,
+    "allowInsecureEndpointOverrides": true,
+    "endpointOverrides": {
+      "tokenUrl": "http://corporate-oidc:8080/realms/corporate-test/protocol/openid-connect/token",
+      "jwksUrl": "http://corporate-oidc:8080/realms/corporate-test/protocol/openid-connect/certs",
+      "userInfoUrl": "http://corporate-oidc:8080/realms/corporate-test/protocol/openid-connect/userinfo"
+    }
+  }
+}
