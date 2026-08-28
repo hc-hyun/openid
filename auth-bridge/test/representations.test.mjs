@@ -1,0 +1,112 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+
+import {
+  apiClientRepresentation,
+  audienceMapperRepresentations,
+  cliClientRepresentation,
+  hardcodedTesterMapperRepresentation,
+  identityProviderRepresentation,
+  realmRepresentation,
+  redirectorConfigRepresentation,
+  validateDiscovery,
+} from "../lib/representations.mjs";
+
+const config = {
+  realm: {
+    name: "authbridge",
+    displayName: "AuthBridge",
+    sslRequired: "external",
+    accessTokenLifespan: 300,
+    ssoSessionIdleTimeout: 1800,
+    ssoSessionMaxLifespan: 36000,
+  },
+  clients: { cli: "skills-cli", api: "skills-api" },
+  resources: { mcpAudience: "https://service.example/mcp" },
+  upstream: {
+    alias: "company-oidc",
+    displayName: "Company login",
+    clientId: "issued-client",
+    clientSecret: "issued-secret",
+    clientAuthMethod: "client_secret_post",
+    defaultScope: "openid profile email",
+    responseMode: "query",
+    syncMode: "IMPORT",
+    trustEmail: false,
+  },
+};
+
+const discovery = {
+  issuer: "https://idp.example/adfs",
+  authorization_endpoint: "https://idp.example/adfs/oauth2/authorize?api-version=1",
+  token_endpoint: "https://idp.example/adfs/oauth2/token",
+  jwks_uri: "https://idp.example/adfs/discovery/keys",
+  userinfo_endpoint: "https://idp.example/adfs/userinfo",
+  end_session_endpoint: "https://idp.example/adfs/logout",
+  response_types_supported: ["code"],
+  response_modes_supported: ["query", "form_post"],
+};
+
+test("realm and clients enforce dedicated Device Flow/bearer-only boundaries", () => {
+  assert.equal(realmRepresentation(config).realm, "authbridge");
+
+  const cli = cliClientRepresentation(config);
+  assert.equal(cli.publicClient, true);
+  assert.equal(cli.standardFlowEnabled, false);
+  assert.equal(cli.directAccessGrantsEnabled, false);
+  assert.equal(cli.attributes["oauth2.device.authorization.grant.enabled"], "true");
+
+  const api = apiClientRepresentation(config);
+  assert.equal(api.bearerOnly, true);
+  assert.equal(api.serviceAccountsEnabled, false);
+});
+
+test("audience mappers add API and exact MCP resource audiences to access tokens", () => {
+  const [api, mcp] = audienceMapperRepresentations(config);
+  assert.equal(api.config["included.client.audience"], "skills-api");
+  assert.equal(mcp.config["included.custom.audience"], "https://service.example/mcp");
+  assert.equal(api.config["access.token.claim"], "true");
+  assert.equal(mcp.config["id.token.claim"], "false");
+});
+
+test("OIDC broker representation is discovery-driven and forces query mode in authorization URL", () => {
+  const representation = identityProviderRepresentation(config, discovery);
+  const authorizationUrl = new URL(representation.config.authorizationUrl);
+  assert.equal(authorizationUrl.searchParams.get("api-version"), "1");
+  assert.equal(authorizationUrl.searchParams.get("response_mode"), "query");
+  assert.equal(representation.config.tokenUrl, discovery.token_endpoint);
+  assert.equal(representation.config.jwksUrl, discovery.jwks_uri);
+  assert.equal(representation.config.clientSecret, "issued-secret");
+  assert.equal(representation.storeToken, false);
+  assert.equal(representation.config.responseMode, undefined);
+});
+
+test("discovery and configured response mode are validated", () => {
+  assert.equal(validateDiscovery(discovery), discovery);
+  assert.throws(
+    () => validateDiscovery({ ...discovery, response_types_supported: ["id_token"] }),
+    /response_type=code/,
+  );
+  assert.throws(
+    () =>
+      identityProviderRepresentation(config, {
+        ...discovery,
+        response_modes_supported: ["form_post"],
+      }),
+    /response_mode=query/,
+  );
+});
+
+test("broker users receive tester and browser flow defaults to the upstream alias", () => {
+  const mapper = hardcodedTesterMapperRepresentation(config);
+  assert.equal(mapper.identityProviderMapper, "oidc-hardcoded-role-idp-mapper");
+  assert.equal(mapper.config.role, "tester");
+
+  const redirector = redirectorConfigRepresentation(config, {
+    id: "existing-id",
+    config: { keep: "value" },
+  });
+  assert.equal(redirector.id, "existing-id");
+  assert.equal(redirector.config.keep, "value");
+  assert.equal(redirector.config.defaultProvider, "company-oidc");
+});
