@@ -134,7 +134,7 @@ export function validateProfile(profile) {
 function requireSecret(env, name) {
   const value = env[name]?.trim();
   if (!value || PLACEHOLDER.test(value)) {
-    throw new Error(`${name} is required; set it in auth-bridge/.env`);
+    throw new Error(`${name} is required; set it in the environment or auth-bridge/.env`);
   }
   return value;
 }

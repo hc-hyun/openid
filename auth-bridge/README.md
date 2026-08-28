@@ -6,13 +6,15 @@
 CLI Device Flow
   → AuthBridge Keycloak
   → 사내 OIDC 웹 로그인
-  → form_post callback
+  → query 또는 form_post callback
   → AuthBridge gateway
   → Keycloak token
   → Skills API / MCP
 ```
 
 기본 공개 주소는 현재 임시 주소인 `https://smart-dna.sec.samsung.net/ws2/30001`입니다. prefix는 단일 `AUTHBRIDGE_PUBLIC_URL`로 바꿀 수 있으며 issuer, callback, 기본 MCP audience가 함께 이동합니다.
+
+사내 OIDC, response mode, 외부 DB와 Kubernetes 이관 기준은 [`docs/company-porting-guide.ko.md`](docs/company-porting-guide.ko.md)에 정리했습니다.
 
 ## 최초 설정
 
@@ -23,7 +25,7 @@ config/authbridge.json
   upstream.discoveryUrl
 ```
 
-그 뒤 발급을 갱신할 때 바꿀 값은 Client ID와 Client Secret 두 개뿐입니다.
+동일한 배포 프로필과 인프라가 이미 고정된 뒤 사내 OIDC 발급을 갱신할 때 바꿀 값은 Client ID와 Client Secret 두 개뿐입니다.
 
 ```bash
 cd auth-bridge
@@ -49,7 +51,7 @@ https://smart-dna.sec.samsung.net/ws2/30001/realms/authbridge/broker/company-oid
 
 ## 실행
 
-사내 인증서가 공인 CA 체인이면 다음 한 명령으로 PostgreSQL, production-mode Keycloak, gateway를 시작하고 realm을 프로비저닝합니다.
+로컬 standalone Compose에서 사내 인증서가 공인 CA 체인이면 다음 한 명령으로 PostgreSQL, production-mode Keycloak, gateway를 시작하고 realm을 프로비저닝합니다.
 
 ```bash
 npm run setup
@@ -96,9 +98,9 @@ KC_PROXY_HEADERS=xforwarded
 
 `KC_HTTP_RELATIVE_PATH`는 설정하지 않습니다. Gateway가 공개 prefix를 제거한 뒤 Keycloak root로 전달하기 때문입니다.
 
-## form_post 호환
+## OIDC response mode
 
-운영 프로필은 현재 확인한 사내 동작에 맞춰 `responseMode=form_post`를 기본으로 사용합니다. Keycloak 26 generic OIDC broker callback은 `GET`만 처리하므로 gateway가 정확한 broker callback의 URL-encoded `POST`만 검증해 내부 `GET`으로 전달합니다.
+구현은 `query`와 `form_post`를 모두 지원하며 운영 프로필의 기본값만 현재 확인한 사내 동작에 맞춰 `responseMode=form_post`입니다. `query`는 일반 `GET` callback으로 그대로 프록시합니다. Keycloak 26 generic OIDC broker callback은 `POST`를 직접 처리하지 못하므로 `form_post`에서만 gateway가 정확한 broker callback의 URL-encoded `POST`를 검증해 내부 `GET`으로 전달합니다.
 
 - 최대 8 KiB 및 내부 query 재인코딩 후 길이 재검사
 - `state` 필수, `code` 또는 `error` 중 정확히 하나
@@ -107,7 +109,7 @@ KC_PROXY_HEADERS=xforwarded
 - callback 내부 요청에는 Cookie, Accept 계열, User-Agent만 전달
 - code, state, token을 gateway log에 기록하지 않음
 
-사내 서버가 `query`를 지원하는 것으로 확정되면 `config/authbridge.json`의 `responseMode`를 `query`로 바꿀 수 있습니다. 두 모드 모두 실제 mock OIDC 전체 E2E로 검증됩니다.
+`config/authbridge.json`의 `responseMode`를 사내 서버에 맞게 선택합니다. 두 모드 모두 mock OIDC 전체 E2E로 검증되었습니다. `query`에서도 prefix 제거, 공개 경로 제한과 forwarded header 정규화를 위해 gateway 유지를 권장합니다. 상세 판단 기준은 [사내 포팅 가이드](docs/company-porting-guide.ko.md#oidc-response-mode-선택)를 참고하세요.
 
 ## CLI 설정
 
@@ -150,7 +152,8 @@ Gateway는 Keycloak 인증 경로 전용이므로 `/mcp` API 자체를 대신 �
 ## 보안 메모
 
 - `.env`, 실제 secret, private key와 인증서는 Git에 넣지 않습니다.
-- Compose의 기본 DB/admin 비밀번호는 로컬 MVP 전용입니다. 회사 배포에서는 `.env` 또는 secret manager로 반드시 교체합니다.
+- Compose의 기본 DB/admin 비밀번호는 로컬 MVP 전용입니다. 회사 배포에서는 Kubernetes Secret 또는 secret manager로 반드시 교체합니다.
+- Kubernetes Secret에서 주입한 사내 OIDC Client Secret도 현재 구성에서는 Keycloak IdP 설정으로 DB에 저장됩니다. DB, WAL과 backup을 함께 보호하거나 Keycloak Vault 연동을 검토합니다.
 - 운영 Discovery의 issuer, authorization, token, JWKS, UserInfo, logout endpoint는 모두 HTTPS만 허용합니다. HTTP 예외는 mock 프로필에서만 명시적으로 활성화됩니다.
 - 사내 TLS CA bundle은 Node와 Keycloak truststore에 사용합니다. AD FS token-signing 인증서는 Discovery의 `jwks_uri`를 통해 회전됩니다.
 - 제공받은 인증서가 TLS client PFX/private key이고 사내 서버가 mTLS client authentication을 요구한다면 현재의 Client ID/Secret 구성과 다른 계약이므로 별도 구현이 필요합니다.

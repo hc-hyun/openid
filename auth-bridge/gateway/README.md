@@ -1,6 +1,8 @@
 # AuthBridge Gateway
 
-Keycloak 앞에서 `/ws2/30001` 같은 공개 prefix를 제거하고, 사내 OIDC가 반환하는 `form_post` callback을 Keycloak이 처리할 수 있는 내부 `GET` callback으로 바꾸는 무의존성 Node.js 20 게이트웨이입니다.
+Keycloak 앞에서 `/ws2/30001` 같은 공개 prefix를 제거하고, 공개 경로와 forwarded header를 제한하는 무의존성 Node.js 20 게이트웨이입니다. `query` callback은 그대로 프록시하고, `form_post` callback은 검증한 뒤 Keycloak이 처리할 수 있는 내부 `GET` callback으로 변환합니다.
+
+사내 OIDC response mode별 포팅 기준은 [`../docs/company-porting-guide.ko.md`](../docs/company-porting-guide.ko.md#oidc-response-mode-선택)를 참고하세요.
 
 ## 실행
 

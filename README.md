@@ -54,7 +54,7 @@ OIDC_REDIRECT_URI=http://localhost:3000/callback
 
 - [`web-login-mvp`](./web-login-mvp): 브라우저 Authorization Code + PKCE 로그인
 - [`cli-device-auth-mvp`](./cli-device-auth-mvp): `gh auth login` 형태의 CLI Device Flow와 보호 API/MCP 호출
-- [`auth-bridge`](./auth-bridge): 웹 OIDC만 지원하는 사내 IdP를 Keycloak Device Flow에 연결하는 독립 프로젝트
+- [`auth-bridge`](./auth-bridge): 웹 OIDC만 지원하는 사내 IdP를 Keycloak Device Flow에 연결하는 독립 프로젝트 ([사내 포팅 가이드](./auth-bridge/docs/company-porting-guide.ko.md))
 
 CLI MVP는 최종 사용자에게 API key나 환경변수를 요구하지 않습니다. CLI가 일회용 코드를 표시하고 브라우저에서 로그인·승인한 뒤 access/refresh token을 자체 관리합니다.
 
