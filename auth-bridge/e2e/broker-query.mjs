@@ -19,7 +19,21 @@ const mockRoot = join(authBridgeRoot, "mock");
 const cliRoot = join(repositoryRoot, "cli-device-auth-mvp");
 const cliPath = join(cliRoot, "bin/skillsctl.mjs");
 const apiPath = join(cliRoot, "api-server.mjs");
-const mockProfile = join(authBridgeRoot, "config/mock-query.json");
+const gatewayPath = join(authBridgeRoot, "gateway/server.mjs");
+const responseMode = process.env.AUTHBRIDGE_E2E_RESPONSE_MODE ?? "query";
+assert(
+  ["query", "form_post"].includes(responseMode),
+  `Unsupported AUTHBRIDGE_E2E_RESPONSE_MODE: ${responseMode}`,
+);
+const usesFormPostGateway = responseMode === "form_post";
+const publicBaseUrl = usesFormPostGateway
+  ? "http://localhost:8180/ws2/30001"
+  : "http://localhost:8080";
+const issuer = `${publicBaseUrl}/realms/authbridge`;
+const mockProfile = join(
+  authBridgeRoot,
+  usesFormPostGateway ? "config/mock-form-post.json" : "config/mock-query.json",
+);
 const mockClientId = "authbridge-broker";
 const mockClientSecret = "mock-corporate-secret";
 const mockUsername = "company-user";
@@ -37,7 +51,9 @@ async function run(command, args, options = {}) {
 
 async function prepareServers() {
   await run(process.execPath, ["validate-realm.mjs"], { cwd: mockRoot });
-  await run("docker", ["compose", "up", "-d", "--wait"], { cwd: mockRoot });
+  await run("docker", ["compose", "up", "-d", "--wait", "--force-recreate"], {
+    cwd: mockRoot,
+  });
   await run(
     "docker",
     [
@@ -50,27 +66,31 @@ async function prepareServers() {
       "-d",
       "--wait",
     ],
-    { cwd: repositoryRoot },
+    {
+      cwd: repositoryRoot,
+      env: { ...process.env, KEYCLOAK_URL: publicBaseUrl },
+    },
   );
 }
 
-async function waitForHealth(url, child) {
+async function waitForHealth(url, child, label) {
   const deadline = Date.now() + 20_000;
   while (Date.now() < deadline) {
-    if (child.exitCode !== null) throw new Error(`Protected API exited with ${child.exitCode}`);
+    if (child.exitCode !== null) throw new Error(`${label} exited with ${child.exitCode}`);
     try {
       const response = await fetch(url, { signal: AbortSignal.timeout(1_000) });
       if (response.ok) return;
     } catch {
-      // The API process can take a moment to bind its local port.
+      // The child process can take a moment to bind its local port.
     }
     await new Promise((resolvePromise) => setTimeout(resolvePromise, 200));
   }
-  throw new Error(`Protected API did not become healthy at ${url}`);
+  throw new Error(`${label} did not become healthy at ${url}`);
 }
 
 async function driveDeviceApproval(verificationUrl) {
   let upstreamAuthorization;
+  let brokerCallback;
   const trace = [];
   const browser = new BrowserSession({
     onRequest({ url, method, headers }) {
@@ -87,6 +107,12 @@ async function driveDeviceApproval(verificationUrl) {
       ) {
         upstreamAuthorization = new URL(url);
       }
+      if (
+        url.pathname.endsWith("/realms/authbridge/broker/company-oidc/endpoint") &&
+        url.origin === new URL(publicBaseUrl).origin
+      ) {
+        brokerCallback = { method, url: new URL(url) };
+      }
     },
   });
 
@@ -95,7 +121,8 @@ async function driveDeviceApproval(verificationUrl) {
     const html = await page.text();
     if (html.includes("Device Login Successful")) {
       assert(upstreamAuthorization, "browser never reached the mock corporate authorization endpoint");
-      return upstreamAuthorization;
+      assert(brokerCallback, "browser never reached the AuthBridge broker callback");
+      return { upstreamAuthorization, brokerCallback };
     }
 
     const login = formById(html, "kc-form-login");
@@ -207,13 +234,13 @@ function loginThroughCli(cliEnv) {
     child.once("close", async (code) => {
       clearTimeout(timeout);
       try {
-        const upstreamAuthorization = authorizationPromise
+        const approval = authorizationPromise
           ? await authorizationPromise
           : undefined;
         if (approvalError) throw approvalError;
         if (code !== 0) throw new Error(`CLI login failed (${code}): ${stderr || stdout}`);
-        assert(upstreamAuthorization, "CLI never printed a verification URL");
-        resolvePromise({ stdout, upstreamAuthorization });
+        assert(approval, "CLI never printed a verification URL");
+        resolvePromise({ stdout, ...approval });
       } catch (error) {
         rejectPromise(error);
       }
@@ -227,11 +254,47 @@ function decodeClaims(token) {
   return JSON.parse(Buffer.from(parts[1], "base64url").toString("utf8"));
 }
 
+async function removeExistingBrokerTestUser(admin) {
+  const query = new URLSearchParams({ username: mockUsername, exact: "true" });
+  const { data: users } = await admin.request(admin.realmPath(`/users?${query}`));
+  for (const user of users) {
+    await admin.request(admin.realmPath(`/users/${encodeURIComponent(user.id)}`), {
+      method: "DELETE",
+      expected: [204],
+    });
+  }
+}
+
 const temporaryConfig = await mkdtemp(join(tmpdir(), "authbridge-e2e-"));
 let api;
+let gateway;
 
 try {
   await prepareServers();
+  if (usesFormPostGateway) {
+    const gatewayEnv = {
+      ...process.env,
+      AUTHBRIDGE_GATEWAY_PUBLIC_URL: publicBaseUrl,
+      AUTHBRIDGE_GATEWAY_HOST: "127.0.0.1",
+      AUTHBRIDGE_GATEWAY_PORT: "8180",
+      AUTHBRIDGE_KEYCLOAK_URL: "http://localhost:8080",
+    };
+    gateway = spawn(process.execPath, [gatewayPath], {
+      cwd: authBridgeRoot,
+      env: gatewayEnv,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    let gatewayError = "";
+    gateway.stderr.setEncoding("utf8");
+    gateway.stderr.on("data", (chunk) => {
+      gatewayError += chunk;
+    });
+    await waitForHealth("http://localhost:8180/healthz", gateway, "AuthBridge gateway").catch(
+      (error) => {
+        throw new Error(`${error.message}${gatewayError ? `: ${gatewayError}` : ""}`);
+      },
+    );
+  }
   const provisionConfig = await loadConfig({
     profilePath: mockProfile,
     env: {
@@ -240,11 +303,14 @@ try {
     },
   });
   await provision(provisionConfig);
+  const admin = new KeycloakAdmin(provisionConfig, { log: { log() {} } });
+  await admin.authenticate();
+  await removeExistingBrokerTestUser(admin);
 
   const cliEnv = {
     ...process.env,
     SKILLSCTL_CONFIG_DIR: temporaryConfig,
-    SKILLS_OIDC_ISSUER: "http://localhost:8080/realms/authbridge",
+    SKILLS_OIDC_ISSUER: issuer,
     SKILLS_OIDC_CLIENT_ID: "skills-cli",
     SKILLS_OIDC_AUDIENCE: "skills-api",
     SKILLS_MCP_AUDIENCE: "http://localhost:3200/mcp",
@@ -266,7 +332,7 @@ try {
   api.stderr.on("data", (chunk) => {
     apiError += chunk;
   });
-  await waitForHealth("http://localhost:3200/health", api).catch((error) => {
+  await waitForHealth("http://localhost:3200/health", api, "Protected API").catch((error) => {
     throw new Error(`${error.message}${apiError ? `: ${apiError}` : ""}`);
   });
 
@@ -275,14 +341,25 @@ try {
   const authorization = login.upstreamAuthorization;
   assert.equal(authorization.searchParams.get("client_id"), mockClientId);
   assert.equal(authorization.searchParams.get("response_type"), "code");
-  assert.equal(authorization.searchParams.get("response_mode"), "query");
+  assert.equal(authorization.searchParams.get("response_mode"), responseMode);
   assert.equal(authorization.searchParams.get("redirect_uri"), provisionConfig.callbackUrl);
   assert(authorization.searchParams.get("state"), "upstream authorization request omitted state");
   assert(authorization.searchParams.get("nonce"), "upstream authorization request omitted nonce");
+  assert.equal(login.brokerCallback.method, usesFormPostGateway ? "POST" : "GET");
+  assert.equal(
+    `${login.brokerCallback.url.origin}${login.brokerCallback.url.pathname}`,
+    provisionConfig.callbackUrl,
+  );
+  if (usesFormPostGateway) {
+    assert.equal(login.brokerCallback.url.search, "", "form_post callback leaked values into its URL");
+  } else {
+    assert(login.brokerCallback.url.searchParams.get("code"), "query callback omitted code");
+    assert(login.brokerCallback.url.searchParams.get("state"), "query callback omitted state");
+  }
 
   const stored = JSON.parse(await readFile(join(temporaryConfig, "credentials.json"), "utf8"));
   const claims = decodeClaims(stored.tokenSet.access_token);
-  assert.equal(claims.iss, "http://localhost:8080/realms/authbridge");
+  assert.equal(claims.iss, issuer);
   assert.equal(claims.preferred_username, mockUsername);
   assert(claims.realm_access?.roles?.includes("tester"), "brokered user lacks tester role");
   const audiences = Array.isArray(claims.aud) ? claims.aud : [claims.aud];
@@ -307,8 +384,6 @@ try {
   }));
   assert.equal(mcp.username, mockUsername);
 
-  const admin = new KeycloakAdmin(provisionConfig, { log: { log() {} } });
-  await admin.authenticate();
   const query = new URLSearchParams({ username: mockUsername, exact: "true" });
   const { data: users } = await admin.request(admin.realmPath(`/users?${query}`));
   assert.equal(users.length, 1, "brokered Keycloak user was not created exactly once");
@@ -325,12 +400,16 @@ try {
   await assert.rejects(readFile(join(temporaryConfig, "credentials.json")), { code: "ENOENT" });
 
   console.log(
-    "OK: mock corporate OIDC -> Keycloak broker -> CLI Device Flow -> API/MCP -> logout succeeded.",
+    `OK: mock corporate OIDC (${responseMode}) -> AuthBridge -> CLI Device Flow -> API/MCP -> logout succeeded.`,
   );
 } finally {
   if (api && api.exitCode === null) {
     api.kill("SIGTERM");
     await new Promise((resolvePromise) => api.once("close", resolvePromise));
+  }
+  if (gateway && gateway.exitCode === null) {
+    gateway.kill("SIGTERM");
+    await new Promise((resolvePromise) => gateway.once("close", resolvePromise));
   }
   await rm(temporaryConfig, { recursive: true, force: true });
 }

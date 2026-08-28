@@ -8,7 +8,9 @@
     "provision": "node scripts/provision.mjs",
     "test": "node --test",
     "test:mock": "node mock/validate-realm.mjs",
-    "test:e2e:broker": "node e2e/broker-query.mjs"
+    "test:e2e:broker": "node e2e/broker-query.mjs",
+    "test:e2e:form-post": "node e2e/broker-form-post.mjs",
+    "test:e2e": "npm run test:e2e:broker && npm run test:e2e:form-post"
   },
   "engines": {
     "node": ">=20"
