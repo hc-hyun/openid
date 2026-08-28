@@ -20,6 +20,8 @@ cd ..
 npm run test:e2e
 ```
 
+독립 AuthBridge Compose까지 포함하려면 `npm run test:e2e:standalone`을 실행합니다.
+
 The imported provider is then available at:
 
 ```text

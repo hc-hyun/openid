@@ -171,6 +171,21 @@ Docker가 실행 중이면 query와 form_post 두 전체 흐름을 직렬로 검
 npm run test:e2e
 ```
 
+독립 production-mode Compose 자체를 mock 사내 OIDC에 붙이는 검증은 다음 명령입니다. 테스트 전용 컨테이너, volume과 로컬 image는 종료 시 제거됩니다.
+
+```bash
+npm run test:e2e:standalone
+```
+
+테스트가 강제 종료되어 전용 stack이 남았다면 `auth-bridge` 폴더에서 다음 정확한 범위만 정리합니다.
+
+```bash
+docker compose -p authbridge-standalone-e2e \
+  -f compose.yaml \
+  -f mock/standalone-keycloak.override.yaml \
+  down --remove-orphans --volumes --rmi local
+```
+
 각 테스트는 다음을 실제 HTTP와 서명된 JWT로 확인합니다.
 
 - mock 사내 OIDC Authorization Code 로그인

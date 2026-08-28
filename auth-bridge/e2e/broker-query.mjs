@@ -25,7 +25,12 @@ assert(
   ["query", "form_post"].includes(responseMode),
   `Unsupported AUTHBRIDGE_E2E_RESPONSE_MODE: ${responseMode}`,
 );
+const usesStandaloneCompose = process.env.AUTHBRIDGE_E2E_STANDALONE === "true";
 const usesFormPostGateway = responseMode === "form_post";
+assert(!usesStandaloneCompose || usesFormPostGateway, "standalone E2E requires form_post mode");
+const standaloneProject = "authbridge-standalone-e2e";
+const standaloneCompose = join(authBridgeRoot, "compose.yaml");
+const standaloneMockOverlay = join(mockRoot, "standalone-keycloak.override.yaml");
 const publicBaseUrl = usesFormPostGateway
   ? "http://localhost:8180/ws2/30001"
   : "http://localhost:8080";
@@ -54,6 +59,33 @@ async function prepareServers() {
   await run("docker", ["compose", "up", "-d", "--wait", "--force-recreate"], {
     cwd: mockRoot,
   });
+  if (usesStandaloneCompose) {
+    const composeArgs = [
+      "compose",
+      "-p",
+      standaloneProject,
+      "-f",
+      standaloneCompose,
+      "-f",
+      standaloneMockOverlay,
+    ];
+    const composeEnv = {
+      ...process.env,
+      AUTHBRIDGE_PUBLIC_URL: publicBaseUrl,
+      AUTHBRIDGE_KEYCLOAK_ADMIN_PORT: "8280",
+      AUTHBRIDGE_GATEWAY_PORT: "8180",
+    };
+    await run("docker", [...composeArgs, "down", "--volumes", "--remove-orphans"], {
+      cwd: authBridgeRoot,
+      env: composeEnv,
+    });
+    await run("docker", [...composeArgs, "up", "-d", "--build", "--wait"], {
+      cwd: authBridgeRoot,
+      env: composeEnv,
+      timeout: 300_000,
+    });
+    return;
+  }
   await run(
     "docker",
     [
@@ -69,6 +101,36 @@ async function prepareServers() {
     {
       cwd: repositoryRoot,
       env: { ...process.env, KEYCLOAK_URL: publicBaseUrl },
+    },
+  );
+}
+
+async function cleanupStandaloneServers() {
+  if (!usesStandaloneCompose) return;
+  await run(
+    "docker",
+    [
+      "compose",
+      "-p",
+      standaloneProject,
+      "-f",
+      standaloneCompose,
+      "-f",
+      standaloneMockOverlay,
+      "down",
+      "--volumes",
+      "--remove-orphans",
+      "--rmi",
+      "local",
+    ],
+    {
+      cwd: authBridgeRoot,
+      env: {
+        ...process.env,
+        AUTHBRIDGE_PUBLIC_URL: publicBaseUrl,
+        AUTHBRIDGE_KEYCLOAK_ADMIN_PORT: "8280",
+        AUTHBRIDGE_GATEWAY_PORT: "8180",
+      },
     },
   );
 }
@@ -271,7 +333,7 @@ let gateway;
 
 try {
   await prepareServers();
-  if (usesFormPostGateway) {
+  if (usesFormPostGateway && !usesStandaloneCompose) {
     const gatewayEnv = {
       ...process.env,
       AUTHBRIDGE_GATEWAY_PUBLIC_URL: publicBaseUrl,
@@ -300,6 +362,9 @@ try {
     env: {
       UPSTREAM_OIDC_CLIENT_ID: mockClientId,
       UPSTREAM_OIDC_CLIENT_SECRET: mockClientSecret,
+      ...(usesStandaloneCompose
+        ? { AUTHBRIDGE_KEYCLOAK_ADMIN_URL: "http://localhost:8280" }
+        : {}),
     },
   });
   await provision(provisionConfig);
@@ -400,7 +465,7 @@ try {
   await assert.rejects(readFile(join(temporaryConfig, "credentials.json")), { code: "ENOENT" });
 
   console.log(
-    `OK: mock corporate OIDC (${responseMode}) -> AuthBridge -> CLI Device Flow -> API/MCP -> logout succeeded.`,
+    `OK: mock corporate OIDC (${responseMode}${usesStandaloneCompose ? ", standalone compose" : ""}) -> AuthBridge -> CLI Device Flow -> API/MCP -> logout succeeded.`,
   );
 } finally {
   if (api && api.exitCode === null) {
@@ -411,5 +476,9 @@ try {
     gateway.kill("SIGTERM");
     await new Promise((resolvePromise) => gateway.once("close", resolvePromise));
   }
-  await rm(temporaryConfig, { recursive: true, force: true });
+  try {
+    await cleanupStandaloneServers();
+  } finally {
+    await rm(temporaryConfig, { recursive: true, force: true });
+  }
 }
