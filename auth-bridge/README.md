@@ -153,7 +153,8 @@ Gateway는 Keycloak 인증 경로 전용이므로 `/mcp` API 자체를 대신 �
 
 - `.env`, 실제 secret, private key와 인증서는 Git에 넣지 않습니다.
 - Compose의 기본 DB/admin 비밀번호는 로컬 MVP 전용입니다. 회사 배포에서는 Kubernetes Secret 또는 secret manager로 반드시 교체합니다.
-- Kubernetes Secret에서 주입한 사내 OIDC Client Secret도 현재 구성에서는 Keycloak IdP 설정으로 DB에 저장됩니다. DB, WAL과 backup을 함께 보호하거나 Keycloak Vault 연동을 검토합니다.
+- 현재 Compose는 DB-at-rest, WAL과 backup 암호화를 구성하지 않습니다. 사내 운영에서는 DB/platform 계층에 반드시 적용합니다. 별개로, OIDC Client Secret의 literal 사본을 Keycloak DB에 남기지 않으려면 Keycloak Vault 연동이 필요합니다.
+- REST `encrypt`/`decrypt` 형태의 사내 DKMS 연동은 현재 미구현입니다. 사내 환경에서 개발할 [DKMS Vault SPI TODO](docs/company-porting-guide.ko.md#todo-사내-dkms-rest-vault-연동)에 구현 경계와 수용 기준을 남겼습니다.
 - 운영 Discovery의 issuer, authorization, token, JWKS, UserInfo, logout endpoint는 모두 HTTPS만 허용합니다. HTTP 예외는 mock 프로필에서만 명시적으로 활성화됩니다.
 - 사내 TLS CA bundle은 Node와 Keycloak truststore에 사용합니다. AD FS token-signing 인증서는 Discovery의 `jwks_uri`를 통해 회전됩니다.
 - 제공받은 인증서가 TLS client PFX/private key이고 사내 서버가 mTLS client authentication을 요구한다면 현재의 Client ID/Secret 구성과 다른 계약이므로 별도 구현이 필요합니다.

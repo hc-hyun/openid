@@ -10,6 +10,7 @@
 - 사내 DB 인프라는 사용할 수 있지만 Keycloak 전용 database 또는 최소 전용 schema와 계정이 필요합니다.
 - Kubernetes Secret은 배포 입력값을 전달하고 회전시키는 수단이지 Keycloak DB를 대체하지 않습니다.
 - 현재 프로비저너는 사내 OIDC Client Secret을 Keycloak IdP 설정으로 저장하므로 DB에도 해당 값의 사본이 남습니다.
+- REST `encrypt`/`decrypt` 형태의 사내 DKMS 연동은 현재 미구현이며, 사내 환경에서 custom Keycloak Vault SPI로 개발할 TODO로 관리합니다.
 
 ## 목표 토폴로지
 
@@ -179,6 +180,95 @@ Kubernetes Secret
 
 DB에 literal Client Secret을 남기지 않으려면 Keycloak file Vault와 Kubernetes Secret volume을 연동하고 IdP 설정에는 vault reference만 저장하도록 프로비저너를 확장해야 합니다. 이는 현재 Compose 구현에는 포함되지 않은 운영 하드닝 항목입니다.
 
+### TODO: 사내 DKMS REST Vault 연동
+
+> **상태: 미구현.** 이 절은 사내 포팅 단계의 설계 TODO이다. 현재 Docker image, 프로비저너와 Compose에는 DKMS client나 custom Keycloak `VaultProvider`가 포함되어 있지 않다.
+
+현재 확인된 가정은 DKMS가 Kubernetes CSI/External Secrets provider가 아닌 REST `encrypt`/`decrypt` API를 제공한다는 것이다. 사내 API 명세와 workload 인증 방식이 확정된 후 사내 환경에서 개발·보안 검토한다.
+
+첫 범위는 Keycloak DB에 사내 OIDC Client Secret 원문을 저장하지 않고 vault reference만 남기는 것이다.
+
+```text
+Keycloak IdP config in DB
+  -> ${vault.company-oidc-client-secret-v1}
+  -> Custom Keycloak VaultProvider SPI
+  -> mounted encrypted payload 또는 DKMS key-id 조회
+  -> DKMS REST decrypt API
+  -> 복호화 값을 Keycloak JVM memory에서 사용
+  -> 사내 OIDC token endpoint
+```
+
+DKMS `encrypt` API는 초기 등록과 회전을 담당하는 별도 운영 Job/CLI에서 사용하고, Keycloak Vault SPI는 런타임 복호화 전용으로 구현하는 것을 기본안으로 한다. Java provider JAR은 고정된 Keycloak 버전에 맞춰 build하고 optimized Keycloak image에 포함한다.
+
+#### 보호 대상별 경계
+
+| 보호 대상 | 처리 방식 |
+|---|---|
+| 사내 OIDC Client Secret | 이 TODO의 대상. DB에 `${vault.<logical-key>}`만 저장하고 custom Vault SPI가 DKMS로 복호화 |
+| DB 접속 비밀번호 | 현재는 `secretKeyRef`로 JVM 시작 시 주입. 향후 REST DKMS를 쓰면 init container가 memory-backed 공유 파일에 쓰고 시작 launcher/config source가 JVM 시작 전 읽도록 별도 설계 |
+| DB row, WAL, replica, snapshot, backup | Vault SPI 범위가 아님. DB/platform TDE, volume과 backup 암호화로 보호 |
+| Realm 토큰 서명·암호화 key | 현재 생성 key는 Keycloak DB에 저장하고 DB/storage 암호화로 보호. 외부 key custody가 필요하면 별도 HSM/Key Provider 설계 검토 |
+| DKMS TLS CA | 공개 trust material은 ConfigMap/인증서 리소스, mTLS private key/token은 Secret 또는 workload identity |
+
+Keycloak table의 각 row/column을 Gateway나 프로비저너에서 직접 암·복호화하지 않는다. Keycloak schema migration, index/search, HA와 버전 업그레이드를 깨뜨릴 수 있다.
+
+#### Kubernetes 값 분리
+
+| 저장 위치 | 값 |
+|---|---|
+| ConfigMap | DKMS URL, vault alias, timeout/retry, cache TTL, 비민감 key/version metadata |
+| Secret 또는 projected credential | DKMS 인증 토큰, mTLS private key, 암호화된 Client Secret payload |
+| 인증서 리소스/ConfigMap | DKMS 서버 CA bundle |
+| Keycloak DB | `${vault.company-oidc-client-secret-v1}` reference만 저장 |
+
+DKMS API가 key-id로 secret을 조회하는 방식인지, 암호문 전체를 받아 복호화하는 방식인지 먼저 확인한다. 후자라면 versioned 암호문의 저장 위치와 무결성 검증 방식을 추가로 정한다. 암호문도 접근정책과 회전 이력 보호를 위해 Secret으로 취급한다.
+
+평문 Client Secret은 ConfigMap, Pod 환경변수, DB, log, metric 또는 영구 volume에 남기지 않는다. DKMS 인증은 정적 API token보다 Kubernetes workload identity 또는 mTLS를 우선한다.
+
+#### 장애·cache 정책
+
+- DKMS TLS hostname과 CA를 검증하고 승인된 workload credential로만 호출한다.
+- timeout, `401`/`403`, `404`, `429`, `5xx`, 비정상 응답 또는 복호화 실패 시 평문 fallback 없이 해당 신규 로그인을 실패시킨다.
+- retry는 짧고 제한적으로 적용하며 authorization code 수명을 넘는 무한 재시도를 하지 않는다.
+- 기본은 평문 cache를 두지 않고 token code 교환마다 DKMS에서 복호화한다. 암호문, key/version metadata만 cache할 수 있다.
+- DKMS SLA/QPS 때문에 평문 cache가 필요하면 별도 보안 승인 후 JVM memory에 짧고 제한된 TTL로만 두고 heap dump를 금지한다. 이 모드에서 평문은 TTL 동안 memory에 남으며, 완전한 zeroization은 보장할 수 없다.
+- DKMS 장애 시 만료된 평문을 계속 사용하는 정책은 별도 보안 승인 없이 허용하지 않는다.
+- Client Secret, 암호문, DKMS 응답 body와 인증 header를 log, trace 또는 오류 응답에 출력하지 않는다.
+- 복호화 값은 최소한 token code 교환 중 Keycloak JVM memory에 존재하며, 승인된 평문 cache를 쓰면 해당 TTL 동안 더 오래 존재한다.
+
+#### Secret 회전 기본안
+
+1. 사내 IdP에서 새 Client Secret을 발급한다.
+2. 별도 운영 Job/CLI가 DKMS `encrypt` API로 새 암호문과 key/version 정보를 생성한다.
+3. Kubernetes Secret을 원자적으로 갱신한다.
+4. Vault provider cache를 무효화하거나 TTL 만료를 기다린다.
+5. 실제 웹 로그인과 authorization code 교환을 확인한다.
+6. 정해진 rollback 기간 후 이전 Secret과 DKMS key version을 폐기한다.
+
+전환 전 DB/WAL/snapshot/backup에 남은 과거 평문은 vault reference로 바꾼다고 소급해 사라지지 않는다. 전환 시 새 Client Secret으로 회전해 이전 값을 무효화하고, 과거 artifact는 DB/platform 암호화·접근통제·보존기간 만료 절차로 관리한다.
+
+#### 수용 테스트
+
+- [ ] 전환 후 현재 IdP 설정, 신규 logical dump, realm export와 Pod 환경변수에 현재 평문 Client Secret이 없음
+- [ ] 전환 전·후 physical DB/WAL/snapshot/backup의 이전 Secret은 무효화되었고 암호화·접근통제·보존기간 정책으로 관리됨
+- [ ] DKMS 복호화 후 `query`/`form_post` broker 로그인과 code 교환 성공
+- [ ] DKMS timeout/4xx/5xx/비정상 응답 시 평문 fallback 없이 fail-closed
+- [ ] DKMS 인증정보, 평문, 암호문과 응답 body가 log/trace에 노출되지 않음
+- [ ] Secret 회전 후 문서화된 rollout 절차로 새 값 적용
+- [ ] 이전 버전 rollback과 폐기 절차 검증
+- [ ] 다중 Keycloak replica에서 cache·회전 동작 검증
+- [ ] 부하 상황에서 DKMS rate limit, retry와 장애 전파 범위 확인
+
+#### 개발 전 확정 항목
+
+- `encrypt`/`decrypt` 요청·응답 형식과 key-id/version model
+- workload 인증 방식: mTLS, service token 또는 Kubernetes identity
+- CA chain, endpoint HA, SLA, timeout과 rate limit
+- 암호문 저장 위치와 무결성 검증 방식
+- key rotation, 이전 버전 허용 기간과 폐기 API
+- audit event와 민감정보 masking 규칙
+- DKMS 장애 시 cache 사용 허용 여부와 최대 TTL
+
 bootstrap admin Secret을 바꾼다고 이미 생성된 Keycloak admin 비밀번호가 자동 회전되는 것도 아닙니다. 최초 bootstrap 이후에는 전용 최소권한 프로비저닝 자격증명과 명시적인 회전 절차를 마련합니다.
 
 ## Kubernetes 포팅 체크리스트
@@ -187,6 +277,7 @@ bootstrap admin Secret을 바꾼다고 이미 생성된 Keycloak admin 비밀번
 - [ ] Keycloak 및 Gateway Deployment/Service 구성
 - [ ] Nginx/Ingress prefix 및 공개 경로 계약 반영
 - [ ] profile ConfigMap과 credential Secret 분리
+- [ ] 사내 DKMS REST Vault SPI 구현·보안 검토 및 Client Secret 평문 DB 제거
 - [ ] idempotent provision Job 구성
 - [ ] DB/IdP TLS CA mount와 hostname verification 적용
 - [ ] Keycloak admin/management/DB NetworkPolicy 적용
@@ -200,6 +291,8 @@ bootstrap admin Secret을 바꾼다고 이미 생성된 Keycloak admin 비밀번
 
 - [Keycloak database 구성](https://www.keycloak.org/server/db)
 - [Keycloak Vault 구성](https://www.keycloak.org/server/vault)
+- [Keycloak custom Vault SPI](https://www.keycloak.org/docs/latest/server_development/index.html#_vault_spi)
+- [Keycloak provider 구성](https://www.keycloak.org/server/configuration-provider)
 - [Keycloak production 구성](https://www.keycloak.org/server/configuration-production)
 - [Kubernetes Secret](https://kubernetes.io/docs/concepts/configuration/secret/)
 - [Kubernetes Secret 운영 권장사항](https://kubernetes.io/docs/concepts/security/secrets-good-practices/)
