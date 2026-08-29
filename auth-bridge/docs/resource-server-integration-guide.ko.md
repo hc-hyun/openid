@@ -93,6 +93,31 @@ Token의 `jku`, `x5u` 같은 header가 가리키는 임의 URL에서 key를 가�
 
 현재 `tester` realm role과 `realm_access.roles` 경로는 MVP 검증용입니다. 운영 group/entitlement claim 계약이 확정되기 전에는 이를 모든 서비스의 공통 권한 계약으로 하드코딩하지 않습니다.
 
+## 공개키와 인증서버 통신
+
+API 서비스는 JWT 서명을 검증할 공개키만이 아니라 exact issuer, 자기 audience, endpoint별 required scope와 허용 알고리즘도 설정해야 합니다. 반대로 일반적인 JWT resource server에는 redirect URI, OIDC client secret 또는 refresh token이 필요하지 않습니다.
+
+```text
+시작·cache 갱신·key rotation
+  API 서비스 -> AuthBridge Discovery/JWKS 공개 endpoint
+
+일반 API 요청
+  Client -> Bearer access token -> API 서비스
+                                -> cache한 공개키로 로컬 검증
+```
+
+정상 요청마다 AuthBridge에 token 유효 여부를 묻지 않습니다. API 서비스가 인증서버와 통신하는 시점은 보통 시작 또는 최초 검증 시 Discovery/JWKS를 가져올 때, cache 갱신 시점, 그리고 모르는 `kid`를 받아 signing key 교체를 확인할 때뿐입니다. JWKS의 공개키는 secret이 아니지만 출처를 configured issuer로 고정하고 cache해야 합니다.
+
+공개키 파일을 서비스에 고정 배포해 인증서버 통신을 완전히 없애는 것도 기술적으로 가능하지만 운영 기본안으로 권장하지 않습니다. Realm signing key가 교체될 때 모든 서비스의 key 교체와 재배포가 필요하고, 누락된 서비스는 정상 token을 거부하게 됩니다. 특별한 망 분리 요구가 없다면 Discovery/JWKS 자동 갱신 방식을 사용합니다.
+
+인증서버와 요청 단위 또는 별도 token 통신이 필요한 경우는 다음과 같은 예외입니다. 적용할 때는 플랫폼·보안팀과 client 인증, 장애 및 cache 정책을 별도로 정합니다.
+
+- Opaque access token을 사용하는 경우의 token introspection
+- 로그아웃, 계정 차단 또는 권한 회수를 즉시 반영하기 위한 introspection/정책 조회
+- Downstream 서비스용 token을 새로 받기 위한 token exchange
+
+이러한 예외가 없으면 API 서비스는 token endpoint를 호출하거나 access token을 refresh하지 않습니다. AuthBridge/JWKS 장애 중에도 사용할 수 있는 key cache가 있으면 합의된 cache 정책 안에서 로컬 검증을 계속할 수 있고, usable key가 없으면 fail-closed 합니다.
+
 ## Discovery와 JWKS cache
 
 - Discovery와 JWKS는 process 또는 공용 middleware cache에 보관하며 매 요청마다 AuthBridge를 호출하지 않습니다.
@@ -191,6 +216,8 @@ Exact audience:
 허용 서명 알고리즘:
 Access token 수명:
 Clock skew:
+공개키 방식: Discovery/JWKS cache
+인증서버 통신 예외: 없음 또는 introspection/token exchange 정책
 
 Endpoint -> required scopes:
 - GET  /v1/orders/{id} -> order.read
@@ -229,6 +256,7 @@ Downstream 서비스 호출 여부:
 - [ ] 허용 알고리즘, exact issuer와 exact audience 검증
 - [ ] `exp`, optional `nbf`, `sub` 검증
 - [ ] Endpoint별 scope와 합의된 추가 권한 검증
+- [ ] 요청마다 인증서버를 호출하지 않고 cache한 공개키로 로컬 검증
 - [ ] Discovery/JWKS cache, rotation과 unknown `kid` 보호
 - [ ] 정확한 `401`/`403` challenge 계약 적용
 - [ ] Refresh token과 client secret을 서비스에 배포하지 않음
