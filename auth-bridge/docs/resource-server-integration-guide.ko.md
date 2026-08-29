@@ -78,14 +78,16 @@ API는 인증 실패 시 브라우저 로그인 페이지로 redirect하지 않�
 
 1. Compact JWT 형식과 Bearer header 형식을 검사합니다.
 2. 설정된 exact issuer의 Discovery에서 `jwks_uri`를 얻습니다.
-3. 플랫폼팀이 허용한 알고리즘만 허용하고 현재 MVP verifier 계약에서는 `RS256`을 사용합니다. Token header의 `alg` 값을 그대로 신뢰해 알고리즘을 선택하거나 `none`을 허용하지 않습니다.
-4. `kid`에 해당하는 issuer 소유 공개키로 서명을 검증합니다.
-5. `iss`가 configured issuer와 문자열로 정확히 일치하는지 확인합니다.
-6. `aud`가 문자열 또는 배열인 경우 모두 처리하고, 자기 서비스 audience가 정확히 포함돼 있는지 확인합니다.
-7. 숫자형 `exp`가 존재하고 만료되지 않았는지, `nbf`가 있다면 아직 이르지 않은지 확인합니다. Clock skew는 플랫폼 기준 이내로 제한합니다.
-8. 사용자 주체가 필요한 API는 비어 있지 않은 `sub`를 사용합니다. Email이나 표시 이름을 영구 사용자 key로 사용하지 않습니다.
-9. Endpoint에 필요한 scope가 token의 공백 구분 `scope` 집합에 모두 포함돼 있는지 확인합니다.
-10. 합의된 endpoint에만 확정된 claim 경로의 role/group/entitlement를 추가 확인합니다.
+3. Discovery/JWKS URL과 redirect가 HTTPS를 유지하고 TLS CA·hostname 검증을 통과하는지 확인합니다.
+4. 플랫폼팀이 허용한 알고리즘만 허용하고 현재 MVP verifier 계약에서는 `RS256`을 사용합니다. Token header의 `alg` 값을 그대로 신뢰해 알고리즘을 선택하거나 `none`을 허용하지 않습니다.
+5. `kid`에 해당하는 issuer 소유 공개키로 서명을 검증합니다.
+6. RFC access-token type 또는 Keycloak access-token marker를 확인해 ID token과 refresh token을 배타적으로 거부합니다.
+7. `iss`가 configured issuer와 문자열로 정확히 일치하는지 확인합니다.
+8. `aud`가 문자열 또는 배열인 경우 모두 처리하고, 자기 서비스 audience가 정확히 포함돼 있는지 확인합니다.
+9. 숫자형 `exp`가 존재하고 만료되지 않았는지, `nbf`가 있다면 아직 이르지 않은지 확인합니다. Clock skew는 플랫폼 기준 이내로 제한합니다.
+10. 사용자 주체가 필요한 API는 비어 있지 않은 `sub`를 사용합니다. Email이나 표시 이름을 영구 사용자 key로 사용하지 않습니다.
+11. Endpoint에 필요한 scope가 token의 공백 구분 `scope` 집합에 모두 포함돼 있는지 확인합니다.
+12. 합의된 endpoint에만 확정된 claim 경로의 role/group/entitlement를 추가 확인합니다.
 
 Token의 `jku`, `x5u` 같은 header가 가리키는 임의 URL에서 key를 가져오지 않습니다. 공개키 출처는 configured issuer Discovery의 `jwks_uri`로만 제한해 SSRF와 신뢰 우회를 막습니다.
 
@@ -107,11 +109,13 @@ Token의 `jku`, `x5u` 같은 header가 가리키는 임의 URL에서 key를 가�
 
 ### Token이 없는 경우
 
-RFC 6750에 따라 인증정보가 전혀 없는 요청에는 `error` 값을 생략한 challenge를 반환합니다.
+사내 공통 오류 계약은 token 누락도 `invalid_token`으로 정규화합니다. RFC 6750의 일반 권고는
+인증정보가 전혀 없을 때 `error`를 생략하는 것이지만, 이 연동에서는 client가 같은 복구 분기를
+사용하도록 다음 exact challenge를 적용합니다.
 
 ```http
 HTTP/1.1 401 Unauthorized
-WWW-Authenticate: Bearer realm="order-api"
+WWW-Authenticate: Bearer error="invalid_token"
 ```
 
 ### Token이 유효하지 않은 경우
@@ -120,7 +124,7 @@ Token 형식, 서명, issuer, audience, 만료시간 또는 활성시간 검증�
 
 ```http
 HTTP/1.1 401 Unauthorized
-WWW-Authenticate: Bearer realm="order-api", error="invalid_token"
+WWW-Authenticate: Bearer error="invalid_token"
 ```
 
 응답 body와 `error_description`에는 token 원문, claim, key 정보나 내부 검증 stack을 포함하지 않습니다.
@@ -131,7 +135,7 @@ Token 자체는 유효하지만 필요한 scope 또는 합의된 role/group이 �
 
 ```http
 HTTP/1.1 403 Forbidden
-WWW-Authenticate: Bearer realm="order-api", error="insufficient_scope", scope="order.read"
+WWW-Authenticate: Bearer error="insufficient_scope"
 ```
 
 `401`을 받은 client는 조건이 맞으면 token을 한 번 갱신한 후 요청을 한 번만 재시도할 수 있습니다. `403`은 refresh로 해결하지 않으며 반복 재시도하지 않습니다.
@@ -206,7 +210,7 @@ Downstream 서비스 호출 여부:
 | 시나리오 | 기대 결과 |
 |---|---|
 | 유효한 issuer/audience/scope의 access token | 업무 응답 `2xx` |
-| Authorization header 없음 | `401`, Bearer challenge, error 생략 |
+| Authorization header 없음 | `401 invalid_token` |
 | Token 형식 오류 또는 잘못된 서명 | `401 invalid_token` |
 | 만료 또는 아직 활성화되지 않은 token | `401 invalid_token` |
 | 잘못된 issuer | `401 invalid_token` |
