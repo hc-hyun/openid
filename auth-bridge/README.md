@@ -14,7 +14,7 @@ CLI Device Flow
 
 기본 공개 주소는 현재 임시 주소인 `https://smart-dna.sec.samsung.net/ws2/30001`입니다. prefix는 단일 `AUTHBRIDGE_PUBLIC_URL`로 바꿀 수 있으며 issuer, callback, 기본 MCP audience가 함께 이동합니다.
 
-사내 OIDC, response mode, 외부 DB와 Kubernetes 이관 기준은 [`docs/company-porting-guide.ko.md`](docs/company-porting-guide.ko.md)에 정리했습니다.
+사내 OIDC, response mode, 외부 DB와 Kubernetes 이관 기준은 [`docs/company-porting-guide.ko.md`](docs/company-porting-guide.ko.md)에 정리했습니다. 개별 API 서비스팀에는 [`docs/resource-server-integration-guide.ko.md`](docs/resource-server-integration-guide.ko.md)를 전달해 JWT access token 검증, 오류 응답과 refresh 책임 경계를 적용합니다.
 
 ## 최초 설정
 

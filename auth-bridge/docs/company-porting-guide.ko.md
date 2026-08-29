@@ -28,6 +28,14 @@ Provision Job
 
 Gateway는 무상태이므로 복제할 수 있습니다. Keycloak과 Gateway의 관리·health 포트는 클러스터 내부에만 두고 공개 트래픽은 Nginx/Ingress를 통해서만 받습니다.
 
+## Resource Server JWT Access Token 검증 계약
+
+서비스팀에는 인증 방식을 **OAuth 2.0 Bearer Access Token 검증**이라고 안내합니다. 각 서비스는 JWT 서명, exact issuer/audience, 만료시간과 endpoint scope를 로컬 검증하고 refresh token을 받거나 인증서버에 refresh 요청하지 않습니다.
+
+서비스별 설정 양식, 정확한 `401`/`403` 계약, JWKS key rotation, downstream 호출 경계와 인수 테스트는 독립 전달 문서인 [Resource Server 연동 가이드](resource-server-integration-guide.ko.md)를 기준으로 합니다.
+
+현재 프로비저너는 `skills-api`와 MCP audience만 생성하므로 새 서비스의 audience와 scope는 서비스 전달 전에 AuthBridge 쪽에 별도로 프로비저닝해야 합니다. 모든 서비스 audience를 하나의 token에 계속 추가하지 않고 resource별 token 경계를 유지합니다.
+
 ## 사내 OIDC 사전 확인 항목
 
 다음 항목은 환경별 배포 프로필로 관리합니다.
